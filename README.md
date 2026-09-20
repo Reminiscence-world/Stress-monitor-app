@@ -29,8 +29,8 @@ A transparent, non-clinical welfare decision-support system built for operationa
 
 [ Supervisory Presentation Layer ]
   * app_officer_dashboard.py    -> Triage roster, synchronized drilldown, and audit logging
-
-  Model Explainability & Transparency
+'''
+## Model Explainability & Transparency
 Rather than deploying black-box neural networks, the platform uses a standardized Logistic Regression classifier. Every predicted score can be directly explained by verifiable weights:
 
 Primary Strain Drivers: Consecutive duty days, accumulated overtime hours, leave entitlement arrears, and station transfer frequency.
@@ -39,7 +39,7 @@ Mitigating Factors: Regular sleep duration bands, home station postings, and pos
 
 Flagged records generate a Multi-Factor Welfare Dossier highlighting factual triggers and practical administrative talking points.
 
-Setup & Running Instructions
+## Setup & Running Instructions
 1. Prerequisites & Environment Setup
 (For new environments or external evaluators cloning the project. If you have already installed these packages locally, you can proceed directly to Step 2.)
 
@@ -65,13 +65,6 @@ Accessible in browser at: http://localhost:8502
 Regulatory Notice
 This repository utilizes synthetic demonstrator data for evaluation purposes. The platform operates strictly as an administrative decision-support system and must always remain under human-in-the-loop supervisory oversight.
 
----
 
-### Push to GitHub
 
-Once saved, stage, commit, and push it in PowerShell:
 
-```powershell
-git add README.md
-git commit -m "docs: complete ticket 10 - comprehensive system architecture and ethics guardrails"
-git push origin main
