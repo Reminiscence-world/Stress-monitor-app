@@ -29,7 +29,7 @@ A transparent, non-clinical welfare decision-support system built for operationa
 
 [ Supervisory Presentation Layer ]
   * app_officer_dashboard.py    -> Triage roster, synchronized drilldown, and audit logging
-'''
+```
 ## Model Explainability & Transparency
 Rather than deploying black-box neural networks, the platform uses a standardized Logistic Regression classifier. Every predicted score can be directly explained by verifiable weights:
 
