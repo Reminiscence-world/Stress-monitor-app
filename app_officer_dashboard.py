@@ -1,6 +1,10 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
+from datetime import datetime
 from risk_engine import run_risk_inference
+
+DB_NAME = "personnel_welfare.db"
 
 # Page configuration
 st.set_page_config(
@@ -9,7 +13,29 @@ st.set_page_config(
     layout="wide"
 )
 
-# 1. Mandatory Ethical & Non-Clinical Notice (Spec Section 3 & 8)
+def log_audit_event(action: str, target_id: str = "ALL"):
+    """Ticket 9: Compliance audit trail logging."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                officer_action TEXT,
+                target_personnel_id TEXT
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO audit_logs (officer_action, target_personnel_id)
+            VALUES (?, ?)
+        """, (action, target_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Audit log failure: {e}")
+
+# 1. Mandatory Ethical & Non-Clinical Notice
 st.title("📋 Personnel Welfare & Operational Strain Monitor")
 st.caption("Decision Support Platform • Administrative & Peer-Care Focus Only")
 
@@ -17,12 +43,12 @@ st.warning(
     "**ETHICAL COMPLIANCE & USAGE NOTICE:**\n\n"
     "• **Non-Clinical:** This system is **not a diagnostic medical tool** and does not evaluate psychological disorders.\n"
     "• **No Disciplinary Use:** Outputs reflect operational stress indicators (fatigue, duty cycles) and **must not** be used for disciplinary actions, fitness-for-duty boards, or negative performance appraisals.\n"
-    "• **Confidentiality:** All voluntary check-in signals are isolated and pseudonymized."
+    "• **Confidentiality & Audit:** Voluntary check-in signals are isolated. Every query and record inspection is logged for ethical governance."
 )
 
 st.markdown("---")
 
-# 2. Ingest scored data from Ticket 6 & 7
+# 2. Ingest scored data
 @st.cache_data(ttl=60)
 def fetch_dashboard_data():
     return run_risk_inference()
@@ -54,7 +80,7 @@ with filter_col1:
     selected_tier = st.selectbox(
         "Filter by Operational Strain Tier:",
         options=["All", "High", "Moderate", "Low"],
-        index=1  # Defaults to High for immediate triage
+        index=1
     )
 
 with filter_col2:
@@ -66,6 +92,9 @@ if selected_tier != "All":
 
 if search_id:
     filtered_df = filtered_df[filtered_df["personnel_id"].str.contains(search_id, case=False, na=False)]
+
+# Log the filter view event
+log_audit_event(f"VIEW_FILTERED_ROSTER_TIER_{selected_tier}", search_id if search_id else "ROSTER")
 
 # 5. Primary Personnel Table
 st.subheader(f"Personnel Roster ({len(filtered_df)} records)")
@@ -81,26 +110,33 @@ display_cols = [
     "talking_point"
 ]
 
-st.dataframe(
-    filtered_df[display_cols].rename(columns={
-        "personnel_id": "Service ID",
-        "risk_tier": "Strain Tier",
-        "risk_score": "Risk Probability",
-        "continuous_duty_days": "Continuous Duty (Days)",
-        "leave_days_due": "Leave Due (Days)",
-        "overtime_hours_last_30d": "Overtime 30d (Hrs)",
-        "key_signals": "Primary Contributing Signals",
-        "talking_point": "Recommended Supportive Action"
-    }),
-    use_container_width=True,
-    hide_index=True
+export_df = filtered_df[display_cols].rename(columns={
+    "personnel_id": "Service ID",
+    "risk_tier": "Strain Tier",
+    "risk_score": "Risk Probability",
+    "continuous_duty_days": "Continuous Duty (Days)",
+    "leave_days_due": "Leave Due (Days)",
+    "overtime_hours_last_30d": "Overtime 30d (Hrs)",
+    "key_signals": "Primary Contributing Signals",
+    "talking_point": "Recommended Supportive Action"
+})
+
+st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+# Ticket 9: Privacy-Safe Export
+csv_data = export_df.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="📥 Export Welfare Review List (CSV)",
+    data=csv_data,
+    file_name=f"welfare_review_{selected_tier.lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+    mime="text/csv",
+    on_click=lambda: log_audit_event(f"EXPORT_CSV_TIER_{selected_tier}")
 )
 
 st.markdown("---")
 
-# 6. Detailed Individual Inspector (Strictly Synced to Filtered Results)
+# 6. Detailed Individual Inspector
 st.subheader("🔍 Personnel Case Drilldown")
-
 available_ids = filtered_df["personnel_id"].tolist()
 
 if not available_ids:
@@ -113,6 +149,7 @@ else:
     )
 
     case = filtered_df[filtered_df["personnel_id"] == inspect_id].iloc[0]
+    log_audit_event("VIEW_CASE_DRILLDOWN", inspect_id)
     
     dossier_col1, dossier_col2 = st.columns(2)
     with dossier_col1:
