@@ -66,5 +66,5 @@ Regulatory Notice
 This repository utilizes synthetic demonstrator data for evaluation purposes. The platform operates strictly as an administrative decision-support system and must always remain under human-in-the-loop supervisory oversight.
 
 
-
+    
 
