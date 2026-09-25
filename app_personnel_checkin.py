@@ -13,8 +13,22 @@ st.set_page_config(
 if "submitted" not in st.session_state:
     st.session_state.submitted = False
 
-st.title("🛡️ Personnel Wellness Self-Check-in")
-st.caption("Confidential • Voluntary • Non-Clinical")
+# Before:
+# st.title("🛡️ Personnel Wellness Self-Check-in")
+# st.caption("Confidential • Voluntary • Non-Clinical")
+
+# Replace with this:
+st.markdown(
+    """
+    <h2 style='margin-bottom: 0px; font-weight: 700;'>
+        🛡️ Personnel Wellness Self-Check-in
+    </h2>
+    <p style='color: #6c757d; font-size: 0.95rem; margin-top: 4px; margin-bottom: 20px;'>
+        Confidential • Voluntary • Non-Clinical
+    </p>
+    """,
+    unsafe_allow_html=True
+)
 
 if st.session_state.submitted:
     # Form is locked after submission
@@ -31,7 +45,21 @@ else:
     )
 
     with st.form(key="wellness_form"):
-        personnel_id = st.text_input("Pseudonymous Service ID", placeholder="e.g., CRP-1001")
+        # Query valid IDs directly from the database to prevent orphan entries
+        def get_valid_personnel_ids():
+            conn = sqlite3.connect("personnel_welfare.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT personnel_id FROM personnel_records ORDER BY personnel_id ASC")
+            rows = cursor.fetchall()
+            conn.close()
+            return [r[0] for r in rows]
+
+        valid_ids = get_valid_personnel_ids() 
+        personnel_id = st.selectbox(
+            "Select Your Pseudonymous Service ID",
+            options=[""] + valid_ids,
+            help="Select your assigned pseudonymous ID to log today's voluntary check-in."
+        )
         
         st.markdown("---")
         st.subheader("Daily Well-Being Check")
