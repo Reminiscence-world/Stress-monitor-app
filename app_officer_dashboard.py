@@ -278,146 +278,161 @@ def make_alert_reason(key_signals, talking_point=None):
 def create_alert_from_case(case):
 
     try:
-
         risk_score = float(case.get("risk_score", 0))
-
     except Exception:
         return
 
-    # Only generate an alert when risk >= 0.75
+    # Only create alerts for risk >= 0.75
     if risk_score < ALERT_THRESHOLD:
         return
 
-    personnel_id = str(case.get("personnel_id", "")).strip()
+    personnel_id = str(
+        case.get("personnel_id", "")
+    ).strip()
 
     if not personnel_id:
         return
 
-    # --------------------------------------------------------
-    # Find the latest check-in submitted by this person
-    # --------------------------------------------------------
-
+    # Get latest check-in
     assessment_id = get_latest_assessment_id(personnel_id)
 
-    # If the model doesn't have an assessment ID and there
-    # is no check-in, don't create a welfare alert.
     if assessment_id is None:
         return
 
     conn = get_connection()
 
-    # --------------------------------------------------------
-    # Prevent duplicate alert for the SAME check-in
-    # --------------------------------------------------------
+    try:
 
-    existing = conn.execute("""
-        SELECT notification_id
-        FROM welfare_notifications
-        WHERE assessment_id = ?
-        LIMIT 1
-    """, (assessment_id,)).fetchone()
+        # ----------------------------------------------------
+        # Prevent duplicate alert for the same check-in
+        # ----------------------------------------------------
 
-    if existing:
-        conn.close()
-        return
+        existing = conn.execute(
+            """
+            SELECT notification_id
+            FROM welfare_notifications
+            WHERE assessment_id = ?
+            LIMIT 1
+            """,
+            (assessment_id,)
+        ).fetchone()
 
-    # --------------------------------------------------------
-    # Extract information
-    # --------------------------------------------------------
+        if existing:
+            conn.close()
+            return
 
-    risk_tier = str(case.get("risk_tier", "High"))
+        # ----------------------------------------------------
+        # Get values safely
+        # ----------------------------------------------------
 
-    posting = case.get(
-        "posting_type",
-        case.get("posting", "Not specified")
-    )
-
-    continuous_duty = case.get(
-        "continuous_duty_days",
-        "N/A"
-    )
-
-    leave_due = case.get(
-        "leave_days_due",
-        "N/A"
-    )
-
-    overtime = case.get(
-        "overtime_hours_last_30d",
-        case.get("overtime_hours_30d", "N/A")
-    )
-
-    self_score = case.get(
-        "self_assessment_score",
-        None
-    )
-
-    key_signals = case.get(
-        "key_signals",
-        ""
-    )
-
-    talking_point = case.get(
-        "talking_point",
-        ""
-    )
-
-    suggested_action = case.get(
-        "suggested_actions",
-        talking_point
-    )
-
-    # --------------------------------------------------------
-    # Human-readable reason
-    # --------------------------------------------------------
-
-    reason = make_alert_reason(
-        key_signals,
-        talking_point
-    )
-
-    # --------------------------------------------------------
-    # Insert alert
-    # --------------------------------------------------------
-
-    conn.execute("""
-        INSERT INTO welfare_notifications (
-            assessment_id,
-            personnel_id,
-            risk_score,
-            risk_tier,
-            posting_type,
-            continuous_duty_days,
-            leave_days_due,
-            overtime_hours_30d,
-            self_assessment_score,
-            key_signals,
-            suggested_actions,
-            talking_point,
-            created_at,
-            is_read,
-            is_cleared
+        risk_tier = str(
+            case.get("risk_tier", "High")
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-    """, (
-        assessment_id,
-        personnel_id,
-        risk_score,
-        risk_tier,
-        posting,
-        continuous_duty,
-        leave_due,
-        overtime,
-        self_score,
-        reason,
-        suggested_action,
-        talking_point,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
 
-    conn.commit()
-    conn.close()
+        posting = str(
+            case.get(
+                "posting_type",
+                case.get("posting", "Not specified")
+            )
+        )
 
+        continuous_duty = case.get(
+            "continuous_duty_days",
+            None
+        )
+
+        leave_due = case.get(
+            "leave_days_due",
+            None
+        )
+
+        overtime = case.get(
+            "overtime_hours_last_30d",
+            case.get(
+                "overtime_hours_30d",
+                None
+            )
+        )
+
+        self_score = case.get(
+            "self_assessment_score",
+            None
+        )
+
+        key_signals = case.get(
+            "key_signals",
+            "elevated operational strain"
+        )
+
+        talking_point = case.get(
+            "talking_point",
+            ""
+        )
+
+        suggested_action = case.get(
+            "suggested_actions",
+            talking_point
+        )
+
+        # ----------------------------------------------------
+        # Convert model signal into simple human wording
+        # ----------------------------------------------------
+
+        reason = make_alert_reason(
+            key_signals,
+            talking_point
+        )
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Insert ONLY the core columns.
+        #
+        # This avoids crashing if your older database
+        # does not contain one of the newer optional columns.
+        # ----------------------------------------------------
+
+        conn.execute(
+            """
+            INSERT INTO welfare_notifications (
+                assessment_id,
+                personnel_id,
+                risk_score,
+                risk_tier,
+                key_signals,
+                talking_point,
+                created_at,
+                is_read,
+                is_cleared
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                assessment_id,
+                personnel_id,
+                risk_score,
+                risk_tier,
+                reason,
+                suggested_action,
+                datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                0,
+                0
+            )
+        )
+
+        conn.commit()
+
+    except sqlite3.Error as e:
+
+        # Don't crash the entire dashboard.
+        print(
+            f"Alert database error: {e}"
+        )
+
+    finally:
+
+        conn.close()
 
 # ============================================================
 # GET ACTIVE ALERTS
