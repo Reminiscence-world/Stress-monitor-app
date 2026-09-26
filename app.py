@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import pytz
+import auth
 
 from datetime import datetime, time
 
@@ -448,6 +449,26 @@ def ensure_db_initialized():
 
 
 ensure_db_initialized()
+
+
+# =========================================================
+# AUTHENTICATION GATE  <-- NEW BLOCK
+# =========================================================
+
+if "auth_view" not in st.session_state:
+    st.session_state.auth_view = "role_selection"
+
+if not auth.is_authenticated():
+    view = st.session_state.auth_view
+    if view == "user_login":
+        auth.render_user_login()
+    elif view == "user_signup":
+        auth.render_user_signup()
+    elif view == "admin_login":
+        auth.render_admin_login()
+    else:
+        auth.render_role_selection()
+    st.stop()   # <-- halts execution here; nothing below runs until logged in
 
 
 # =========================================================
@@ -976,26 +997,25 @@ if "biometric_authenticated" not in st.session_state:
 # SIDEBAR
 # =========================================================
 
-st.sidebar.title(
-    "Operational Portals"
-)
+st.sidebar.title("Operational Portals")
 
-app_mode = st.sidebar.radio(
-    "Select View Mode:",
-    [
-        "Welfare Officer Dashboard",
-        "Personnel Wellness Self-Check-in"
-    ]
-)
+st.sidebar.write(f"Logged in as **{st.session_state.auth['identifier']}**")
+
+if st.sidebar.button("Logout"):
+    auth.logout()
+    st.rerun()
 
 st.sidebar.markdown("---")
 
-if st.sidebar.button(
-    "🔄 Sync & Refresh Database"
-):
+if auth.current_role() == "administrator":
+    app_mode = "Welfare Officer Dashboard"
+else:
+    app_mode = "Personnel Wellness Self-Check-in"
 
+st.sidebar.caption(f"View: **{app_mode}**")
+
+if st.sidebar.button("🔄 Sync & Refresh Database"):
     st.cache_data.clear()
-
     st.rerun()
 
 st.sidebar.caption(
