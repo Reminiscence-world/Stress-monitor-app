@@ -2,31 +2,48 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import pytz
+
 from datetime import datetime, time
+
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
 DB_NAME = "personnel_welfare.db"
 
-# ---------------------------------------------------------
-# Page Configuration
-# ---------------------------------------------------------
+NOTIFICATION_THRESHOLD = 0.75
+
+IST = pytz.timezone("Asia/Kolkata")
+
+CHECKIN_DEADLINE = time(10, 0)
+
+
+# =========================================================
+# PAGE CONFIG
+# =========================================================
+
 st.set_page_config(
     page_title="Personnel Welfare Operational Monitoring System",
     page_icon="🛡️",
     layout="wide"
 )
 
-# ---------------------------------------------------------
-# Operational Clock & Overdue Check-in Engine (IST)
-# ---------------------------------------------------------
-IST = pytz.timezone("Asia/Kolkata")
-now_ist = datetime.now(IST)
-current_time_str = now_ist.strftime("%d %b %Y | %H:%M hrs IST")
 
-CHECKIN_DEADLINE = time(10, 0)
-is_past_deadline = now_ist.time() >= CHECKIN_DEADLINE
+# =========================================================
+# TIME
+# =========================================================
 
-# High-risk notification threshold
-HIGH_RISK_THRESHOLD = 0.75
+def get_ist_now():
+
+    return datetime.now(IST)
+
+
+def get_ist_date():
+
+    return get_ist_now().strftime(
+        "%Y-%m-%d"
+    )
 
 
 # =========================================================
@@ -34,101 +51,403 @@ HIGH_RISK_THRESHOLD = 0.75
 # =========================================================
 
 def ensure_db_initialized():
-    """Ensure database, tables, and baseline records exist."""
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     # -----------------------------------------------------
-    # Personnel Records
+    # Personnel table
     # -----------------------------------------------------
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS personnel_records (
+
             personnel_id TEXT PRIMARY KEY,
-            continuous_duty_days INTEGER,
-            leave_due_days INTEGER,
-            overtime_hours_30d REAL,
-            posting_type TEXT
+
+            deployment_type TEXT DEFAULT 'Base Logistics',
+
+            continuous_duty_days INTEGER DEFAULT 0,
+
+            leave_days_taken_last_90d INTEGER DEFAULT 0,
+
+            leave_days_due INTEGER DEFAULT 0,
+
+            transfers_last_2yrs INTEGER DEFAULT 0,
+
+            overtime_hours_last_30d REAL DEFAULT 0,
+
+            sleep_hours_band TEXT DEFAULT '5-7h',
+
+            resting_hr_band TEXT DEFAULT 'normal',
+
+            elevated_welfare_risk INTEGER DEFAULT 0
         )
     """)
 
     # -----------------------------------------------------
-    # Self Assessments
+    # Self-assessments
     # -----------------------------------------------------
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS self_assessments (
+
             assessment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            personnel_id TEXT,
-            submission_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            personnel_id TEXT NOT NULL,
+
+            submission_timestamp DATETIME
+                DEFAULT CURRENT_TIMESTAMP,
+
             self_assessment_score INTEGER,
+
             FOREIGN KEY (personnel_id)
-            REFERENCES personnel_records(personnel_id)
+                REFERENCES personnel_records(personnel_id)
         )
     """)
 
     # -----------------------------------------------------
-    # Audit Logs
+    # Audit logs
     # -----------------------------------------------------
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_logs (
+
             log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            timestamp DATETIME
+                DEFAULT CURRENT_TIMESTAMP,
+
             officer_action TEXT,
+
             target_personnel_id TEXT
         )
     """)
 
     # -----------------------------------------------------
-    # HIGH-RISK NOTIFICATIONS TABLE
+    # Notifications
     # -----------------------------------------------------
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS welfare_notifications (
+
             notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            assessment_id INTEGER,
+
             personnel_id TEXT NOT NULL,
+
             risk_score REAL NOT NULL,
+
             risk_tier TEXT,
+
             posting_type TEXT,
+
             continuous_duty_days INTEGER,
+
             leave_days_due INTEGER,
+
             overtime_hours_30d REAL,
+
+            self_assessment_score REAL,
+
             key_signals TEXT,
+
+            suggested_actions TEXT,
+
             talking_point TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            created_at DATETIME
+                DEFAULT CURRENT_TIMESTAMP,
+
             is_read INTEGER DEFAULT 0,
+
             is_cleared INTEGER DEFAULT 0
         )
     """)
 
     # -----------------------------------------------------
-    # Seed baseline personnel
+    # Database migration
+    #
+    # If an older version of the database already exists,
+    # add the newer columns without deleting old data.
     # -----------------------------------------------------
-    cursor.execute("SELECT COUNT(*) FROM personnel_records")
 
-    if cursor.fetchone()[0] == 0:
+    cursor.execute(
+        "PRAGMA table_info(personnel_records)"
+    )
+
+    existing_columns = {
+        row[1]
+        for row in cursor.fetchall()
+    }
+
+    required_columns = {
+
+        "deployment_type":
+            "TEXT DEFAULT 'Base Logistics'",
+
+        "leave_days_taken_last_90d":
+            "INTEGER DEFAULT 0",
+
+        "leave_days_due":
+            "INTEGER DEFAULT 0",
+
+        "transfers_last_2yrs":
+            "INTEGER DEFAULT 0",
+
+        "overtime_hours_last_30d":
+            "REAL DEFAULT 0",
+
+        "sleep_hours_band":
+            "TEXT DEFAULT '5-7h'",
+
+        "resting_hr_band":
+            "TEXT DEFAULT 'normal'",
+
+        "elevated_welfare_risk":
+            "INTEGER DEFAULT 0"
+    }
+
+    for column, definition in required_columns.items():
+
+        if column not in existing_columns:
+
+            try:
+
+                cursor.execute(
+                    f"""
+                    ALTER TABLE personnel_records
+                    ADD COLUMN {column} {definition}
+                    """
+                )
+
+            except sqlite3.Error:
+                pass
+
+    # -----------------------------------------------------
+    # Migrate old column names if they exist
+    # -----------------------------------------------------
+
+    if (
+        "posting_type" in existing_columns
+        and "deployment_type" in existing_columns
+    ):
+
+        cursor.execute("""
+            UPDATE personnel_records
+
+            SET deployment_type = posting_type
+
+            WHERE
+                (deployment_type IS NULL
+                 OR deployment_type = '')
+                AND posting_type IS NOT NULL
+        """)
+
+    if "leave_due_days" in existing_columns:
+
+        cursor.execute("""
+            UPDATE personnel_records
+
+            SET leave_days_due = leave_due_days
+
+            WHERE
+                (leave_days_due IS NULL
+                 OR leave_days_due = 0)
+                AND leave_due_days IS NOT NULL
+        """)
+
+    if "overtime_hours_30d" in existing_columns:
+
+        cursor.execute("""
+            UPDATE personnel_records
+
+            SET overtime_hours_last_30d =
+                overtime_hours_30d
+
+            WHERE
+                (overtime_hours_last_30d IS NULL
+                 OR overtime_hours_last_30d = 0)
+                AND overtime_hours_30d IS NOT NULL
+        """)
+
+    # -----------------------------------------------------
+    # Demo personnel
+    # -----------------------------------------------------
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM personnel_records"
+    )
+
+    personnel_count = cursor.fetchone()[0]
+
+    if personnel_count == 0:
 
         demo_personnel = [
-            ("CRP-1001", 45, 12, 28.5, "Active Patrol"),
-            ("CRP-1002", 12, 3, 5.0, "Base Logistics"),
-            ("CRP-1003", 82, 24, 46.0, "High Altitude Border Post"),
-            ("CRP-1004", 5, 0, 2.0, "Signals"),
-            ("CRP-1005", 60, 18, 38.0, "Active Patrol"),
-            ("CRP-1006", 18, 5, 10.0, "Base Logistics"),
-            ("CRP-1007", 95, 30, 52.0, "Counter-Insurgency QRT"),
-            ("CRP-1008", 30, 8, 15.0, "Signals"),
-            ("CRP-1009", 110, 35, 60.0, "High Altitude Border Post"),
-            ("CRP-1010", 25, 4, 12.0, "Base Logistics"),
-            ("CRP-1018", 4, 12, 17.0, "Base Logistics")
+
+            (
+                "CRP-1001",
+                "Active Patrol",
+                45,
+                10,
+                12,
+                2,
+                28.5,
+                "5-7h",
+                "elevated",
+                0
+            ),
+
+            (
+                "CRP-1002",
+                "Base Logistics",
+                12,
+                5,
+                3,
+                0,
+                5.0,
+                ">7h",
+                "normal",
+                0
+            ),
+
+            (
+                "CRP-1003",
+                "High Altitude Border Post",
+                82,
+                5,
+                24,
+                3,
+                46.0,
+                "<5h",
+                "high",
+                1
+            ),
+
+            (
+                "CRP-1004",
+                "Signals",
+                5,
+                8,
+                0,
+                0,
+                2.0,
+                ">7h",
+                "normal",
+                0
+            ),
+
+            (
+                "CRP-1005",
+                "Active Patrol",
+                60,
+                4,
+                18,
+                2,
+                38.0,
+                "5-7h",
+                "elevated",
+                1
+            ),
+
+            (
+                "CRP-1006",
+                "Base Logistics",
+                18,
+                10,
+                5,
+                1,
+                10.0,
+                "5-7h",
+                "normal",
+                0
+            ),
+
+            (
+                "CRP-1007",
+                "Counter-Insurgency QRT",
+                95,
+                2,
+                30,
+                4,
+                52.0,
+                "<5h",
+                "high",
+                1
+            ),
+
+            (
+                "CRP-1008",
+                "Signals",
+                30,
+                6,
+                8,
+                1,
+                15.0,
+                "5-7h",
+                "normal",
+                0
+            ),
+
+            (
+                "CRP-1009",
+                "High Altitude Border Post",
+                110,
+                3,
+                35,
+                5,
+                60.0,
+                "<5h",
+                "high",
+                1
+            ),
+
+            (
+                "CRP-1010",
+                "Base Logistics",
+                25,
+                9,
+                4,
+                0,
+                12.0,
+                ">7h",
+                "normal",
+                0
+            ),
+
+            (
+                "CRP-1018",
+                "Base Logistics",
+                4,
+                10,
+                12,
+                0,
+                17.0,
+                "5-7h",
+                "normal",
+                0
+            )
         ]
 
-        cursor.executemany(
-            """
+        cursor.executemany("""
             INSERT OR IGNORE INTO personnel_records
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            demo_personnel
-        )
+            (
+                personnel_id,
+                deployment_type,
+                continuous_duty_days,
+                leave_days_taken_last_90d,
+                leave_days_due,
+                transfers_last_2yrs,
+                overtime_hours_last_30d,
+                sleep_hours_band,
+                resting_hr_band,
+                elevated_welfare_risk
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, demo_personnel)
 
-        conn.commit()
+    conn.commit()
 
     conn.close()
 
@@ -137,7 +456,7 @@ ensure_db_initialized()
 
 
 # =========================================================
-# DATABASE HELPER FUNCTIONS
+# DATABASE HELPERS
 # =========================================================
 
 def get_valid_personnel_ids():
@@ -145,6 +464,7 @@ def get_valid_personnel_ids():
     ensure_db_initialized()
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -154,156 +474,323 @@ def get_valid_personnel_ids():
     """)
 
     rows = cursor.fetchall()
+
     conn.close()
 
-    return [r[0] for r in rows]
+    return [
+        row[0]
+        for row in rows
+    ]
 
 
 def get_overdue_personnel():
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
-    today_str = now_ist.strftime("%Y-%m-%d")
+    today = get_ist_date()
 
     cursor.execute("""
-        SELECT personnel_id, posting_type
-        FROM personnel_records
-        WHERE personnel_id NOT IN (
-            SELECT DISTINCT personnel_id
-            FROM self_assessments
-            WHERE date(submission_timestamp) = ?
-        )
-        ORDER BY personnel_id ASC
-    """, (today_str,))
+        SELECT
+            personnel_id,
+            deployment_type
 
-    overdue_rows = cursor.fetchall()
+        FROM personnel_records
+
+        WHERE personnel_id NOT IN (
+
+            SELECT DISTINCT personnel_id
+
+            FROM self_assessments
+
+            WHERE date(submission_timestamp) = ?
+
+        )
+
+        ORDER BY personnel_id ASC
+    """, (today,))
+
+    rows = cursor.fetchall()
 
     conn.close()
 
-    return overdue_rows
+    return rows
 
 
-def log_audit_event(action: str, target_id: str = "ALL"):
+# =========================================================
+# AUDIT
+# =========================================================
+
+def log_audit_event(
+    action: str,
+    target_id: str = "ALL"
+):
 
     try:
 
         conn = sqlite3.connect(DB_NAME)
+
         cursor = conn.cursor()
 
         cursor.execute("""
             INSERT INTO audit_logs
-            (officer_action, target_personnel_id)
+            (
+                officer_action,
+                target_personnel_id
+            )
             VALUES (?, ?)
-        """, (action, target_id))
+        """, (
+            action,
+            target_id
+        ))
 
         conn.commit()
+
         conn.close()
 
     except Exception as e:
-        print(f"Audit log failure: {e}")
+
+        print(
+            f"Audit log failure: {e}"
+        )
 
 
 # =========================================================
-# NOTIFICATION FUNCTIONS
+# RISK ENGINE
 # =========================================================
 
-def create_high_risk_notification(person):
+@st.cache_data(ttl=3)
+def fetch_dashboard_data():
 
-    """
-    Create a notification for the Welfare Officer when
-    risk_score >= 0.75.
+    from risk_engine import run_risk_inference
 
-    Prevents duplicate notifications for the same
-    personnel ID on the same day.
-    """
+    return run_risk_inference(
+        DB_NAME
+    )
+
+
+# =========================================================
+# NOTIFICATION CREATION
+# =========================================================
+
+def create_high_risk_notification(
+    person
+):
 
     try:
 
+        personnel_id = str(
+            person["personnel_id"]
+        )
+
+        assessment_id = person.get(
+            "assessment_id",
+            None
+        )
+
+        risk_score = float(
+            person["risk_score"]
+        )
+
+        if risk_score < NOTIFICATION_THRESHOLD:
+            return False
+
         conn = sqlite3.connect(DB_NAME)
+
         cursor = conn.cursor()
 
-        today_str = now_ist.strftime("%Y-%m-%d")
-
         # -------------------------------------------------
-        # Check if notification already exists today
+        # If notification already exists for this exact
+        # assessment, do not create another one.
         # -------------------------------------------------
-        cursor.execute("""
-            SELECT COUNT(*)
-            FROM welfare_notifications
-            WHERE personnel_id = ?
-            AND date(created_at) = ?
-            AND is_cleared = 0
-        """, (
-            str(person["personnel_id"]),
-            today_str
-        ))
 
-        already_exists = cursor.fetchone()[0] > 0
-
-        if not already_exists:
+        if assessment_id is not None:
 
             cursor.execute("""
-                INSERT INTO welfare_notifications (
-                    personnel_id,
-                    risk_score,
-                    risk_tier,
-                    posting_type,
-                    continuous_duty_days,
-                    leave_days_due,
-                    overtime_hours_30d,
-                    key_signals,
-                    talking_point
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT notification_id
+
+                FROM welfare_notifications
+
+                WHERE assessment_id = ?
             """, (
-                str(person["personnel_id"]),
-                float(person["risk_score"]),
-                str(person.get("risk_tier", "High")),
-                str(person.get("posting_type", "N/A")),
-                int(person.get("continuous_duty_days", 0)),
-                int(person.get("leave_days_due", 0)),
-                float(person.get("overtime_hours_last_30d", 0)),
-                str(person.get("key_signals", "Operational strain indicators detected.")),
-                str(person.get("talking_point", "Confidential welfare follow-up recommended."))
+                int(assessment_id),
             ))
 
-            conn.commit()
+            existing = cursor.fetchone()
+
+            if existing:
+
+                conn.close()
+
+                return False
+
+        # -------------------------------------------------
+        # Convert lists to readable text
+        # -------------------------------------------------
+
+        signals = person.get(
+            "key_signals",
+            []
+        )
+
+        actions = person.get(
+            "suggested_actions",
+            []
+        )
+
+        signals_text = "\n".join(
+            f"• {x}"
+            for x in signals
+        )
+
+        actions_text = "\n".join(
+            f"• {x}"
+            for x in actions
+        )
+
+        # -------------------------------------------------
+        # Insert notification
+        # -------------------------------------------------
+
+        cursor.execute("""
+            INSERT INTO welfare_notifications
+            (
+                assessment_id,
+                personnel_id,
+                risk_score,
+                risk_tier,
+                posting_type,
+                continuous_duty_days,
+                leave_days_due,
+                overtime_hours_30d,
+                self_assessment_score,
+                key_signals,
+                suggested_actions,
+                talking_point,
+                is_read,
+                is_cleared
+            )
+
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+        """, (
+
+            (
+                int(assessment_id)
+                if assessment_id is not None
+                else None
+            ),
+
+            personnel_id,
+
+            risk_score,
+
+            str(
+                person.get(
+                    "risk_tier",
+                    "High"
+                )
+            ),
+
+            str(
+                person.get(
+                    "posting",
+                    "Not specified"
+                )
+            ),
+
+            int(
+                person.get(
+                    "continuous_duty_days",
+                    0
+                )
+            ),
+
+            int(
+                person.get(
+                    "leave_days_due",
+                    0
+                )
+            ),
+
+            float(
+                person.get(
+                    "overtime_hours_last_30d",
+                    0
+                )
+            ),
+
+            float(
+                person.get(
+                    "self_assessment_score",
+                    15
+                )
+            ),
+
+            signals_text,
+
+            actions_text,
+
+            str(
+                person.get(
+                    "talking_point",
+                    ""
+                )
+            )
+        ))
+
+        conn.commit()
 
         conn.close()
 
+        return True
+
     except Exception as e:
-        print(f"Notification creation error: {e}")
+
+        print(
+            "Notification creation error:",
+            e
+        )
+
+        return False
 
 
 def generate_high_risk_notifications(df):
 
-    """
-    Scan dashboard inference results and create
-    notifications for all personnel with risk >= 0.75.
-    """
-
     if df is None or df.empty:
         return
 
-    if "risk_score" not in df.columns:
-        return
+    for _, person in df.iterrows():
 
-    critical_cases = df[
-        df["risk_score"] >= HIGH_RISK_THRESHOLD
-    ]
+        try:
 
-    for _, person in critical_cases.iterrows():
-        create_high_risk_notification(person)
+            create_high_risk_notification(
+                person
+            )
 
+        except Exception as e:
+
+            print(
+                "Notification generation error:",
+                e
+            )
+
+
+# =========================================================
+# NOTIFICATION FETCHING
+# =========================================================
 
 def get_notifications():
 
     conn = sqlite3.connect(DB_NAME)
 
-    query = """
+    cursor = conn.cursor()
+
+    cursor.execute("""
         SELECT
+
             notification_id,
+            assessment_id,
             personnel_id,
             risk_score,
             risk_tier,
@@ -311,105 +798,169 @@ def get_notifications():
             continuous_duty_days,
             leave_days_due,
             overtime_hours_30d,
+            self_assessment_score,
             key_signals,
+            suggested_actions,
             talking_point,
             created_at,
             is_read,
             is_cleared
-        FROM welfare_notifications
-        WHERE is_cleared = 0
-        ORDER BY created_at DESC
-    """
 
-    df = pd.read_sql_query(query, conn)
+        FROM welfare_notifications
+
+        WHERE is_cleared = 0
+
+        ORDER BY
+            notification_id DESC
+    """)
+
+    rows = cursor.fetchall()
 
     conn.close()
 
-    return df
+    columns = [
+        "notification_id",
+        "assessment_id",
+        "personnel_id",
+        "risk_score",
+        "risk_tier",
+        "posting_type",
+        "continuous_duty_days",
+        "leave_days_due",
+        "overtime_hours_30d",
+        "self_assessment_score",
+        "key_signals",
+        "suggested_actions",
+        "talking_point",
+        "created_at",
+        "is_read",
+        "is_cleared"
+    ]
+
+    return pd.DataFrame(
+        rows,
+        columns=columns
+    )
 
 
 def get_unread_notification_count():
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT COUNT(*)
+
         FROM welfare_notifications
-        WHERE is_read = 0
-        AND is_cleared = 0
+
+        WHERE
+            is_read = 0
+            AND is_cleared = 0
     """)
 
     count = cursor.fetchone()[0]
 
     conn.close()
 
-    return count
+    return int(count)
 
 
-def mark_notification_read(notification_id):
+def mark_notification_read(
+    notification_id
+):
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE welfare_notifications
+
         SET is_read = 1
+
         WHERE notification_id = ?
-    """, (notification_id,))
+    """, (
+        int(notification_id),
+    ))
 
     conn.commit()
+
     conn.close()
 
 
 def mark_all_notifications_read():
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE welfare_notifications
+
         SET is_read = 1
-        WHERE is_cleared = 0
+
+        WHERE
+            is_cleared = 0
+            AND is_read = 0
     """)
 
     conn.commit()
+
     conn.close()
 
 
-def clear_notification(notification_id):
+def clear_notification(
+    notification_id
+):
 
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE welfare_notifications
-        SET is_cleared = 1,
+
+        SET
+            is_cleared = 1,
             is_read = 1
+
         WHERE notification_id = ?
-    """, (notification_id,))
+    """, (
+        int(notification_id),
+    ))
 
     conn.commit()
+
     conn.close()
 
 
 # =========================================================
-# CACHE — MODEL INFERENCE
+# SESSION STATE
 # =========================================================
 
-@st.cache_data(ttl=5)
-def fetch_dashboard_data():
+if "show_notifications" not in st.session_state:
 
-    from risk_engine import run_risk_inference
+    st.session_state.show_notifications = False
 
-    return run_risk_inference()
+
+if "submitted" not in st.session_state:
+
+    st.session_state.submitted = False
+
+
+if "biometric_authenticated" not in st.session_state:
+
+    st.session_state.biometric_authenticated = False
 
 
 # =========================================================
-# SIDEBAR PORTAL NAVIGATION
+# SIDEBAR
 # =========================================================
 
-st.sidebar.title("Operational Portals")
+st.sidebar.title(
+    "Operational Portals"
+)
 
 app_mode = st.sidebar.radio(
     "Select View Mode:",
@@ -421,9 +972,12 @@ app_mode = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
-if st.sidebar.button("🔄 Sync & Refresh Database"):
+if st.sidebar.button(
+    "🔄 Sync & Refresh Database"
+):
 
     st.cache_data.clear()
+
     st.rerun()
 
 st.sidebar.caption(
@@ -432,13 +986,13 @@ st.sidebar.caption(
 
 
 # =========================================================
-# VIEW 1: WELFARE OFFICER DASHBOARD
+# WELFARE OFFICER DASHBOARD
 # =========================================================
 
 if app_mode == "Welfare Officer Dashboard":
 
     # -----------------------------------------------------
-    # Load Model
+    # Get latest model results
     # -----------------------------------------------------
 
     try:
@@ -453,158 +1007,154 @@ if app_mode == "Welfare Officer Dashboard":
 
         st.stop()
 
-
     # -----------------------------------------------------
-    # Generate Notifications
+    # Create notifications for any existing high-risk
+    # assessments.
     # -----------------------------------------------------
 
     generate_high_risk_notifications(df)
 
-
     # -----------------------------------------------------
-    # TOP HEADER
+    # HEADER + NOTIFICATION BELL
     # -----------------------------------------------------
 
-    header_col1, header_col2 = st.columns([4, 1])
+    header_col, notification_col = st.columns(
+        [8, 2]
+    )
 
-    with header_col1:
+    with header_col:
 
         st.title(
             "📋 Personnel Welfare & Operational Strain Monitor"
         )
 
         st.caption(
-            "Decision Support Platform • Administrative & Peer-Care Focus Only"
+            "Decision Support Platform • "
+            "Administrative & Peer-Care Focus Only"
         )
 
     # -----------------------------------------------------
-    # NOTIFICATION BUTTON — TOP RIGHT
+    # Notification center
+    #
+    # st.fragment allows this section to refresh every
+    # 3 seconds without requiring the entire dashboard
+    # to be manually refreshed.
     # -----------------------------------------------------
 
-    with header_col2:
+    @st.fragment(run_every="3s")
+    def notification_center():
 
-        notification_count = get_unread_notification_count()
-
-        if notification_count > 0:
-
-            notification_label = (
-                f"🔔 Notifications ({notification_count})"
-            )
-
-        else:
-
-            notification_label = "🔔 Notifications"
-
-        if st.button(
-            notification_label,
-            use_container_width=True
-        ):
-
-            st.session_state["show_notifications"] = (
-                not st.session_state.get(
-                    "show_notifications",
-                    False
-                )
-            )
-
-            st.rerun()
-
-
-    # -----------------------------------------------------
-    # NOTIFICATION PANEL
-    # -----------------------------------------------------
-
-    if st.session_state.get("show_notifications", False):
-
-        notifications = get_notifications()
-
-        st.markdown("---")
-
-        notification_header_col1, notification_header_col2 = st.columns(
-            [4, 1]
+        unread_count = (
+            get_unread_notification_count()
         )
 
-        with notification_header_col1:
-
-            st.subheader(
-                "🔔 Welfare Notifications"
-            )
-
-        with notification_header_col2:
-
-            if not notifications.empty:
-
-                if st.button(
-                    "Mark All Read",
-                    use_container_width=True
-                ):
-
-                    mark_all_notifications_read()
-
-                    st.rerun()
-
-
-        if notifications.empty:
-
-            st.success(
-                "✓ No active welfare notifications."
-            )
-
-        else:
-
-            unread_count = len(
-                notifications[
-                    notifications["is_read"] == 0
-                ]
-            )
+        with notification_col:
 
             if unread_count > 0:
 
+                button_label = (
+                    f"🔔 Notifications "
+                    f"({unread_count})"
+                )
+
+            else:
+
+                button_label = (
+                    "🔔 Notifications"
+                )
+
+            if st.button(
+                button_label,
+                key="notification_button",
+                use_container_width=True
+            ):
+
+                st.session_state.show_notifications = (
+                    not st.session_state.show_notifications
+                )
+
+                st.rerun()
+
+        # -------------------------------------------------
+        # Notification panel
+        # -------------------------------------------------
+
+        if st.session_state.show_notifications:
+
+            notifications = get_notifications()
+
+            st.markdown("---")
+
+            notification_header_col, action_col = (
+                st.columns([7, 3])
+            )
+
+            with notification_header_col:
+
+                st.subheader(
+                    "🔔 Welfare Notifications"
+                )
+
+            with action_col:
+
+                if not notifications.empty:
+
+                    if st.button(
+                        "Mark All as Read",
+                        key="mark_all_read"
+                    ):
+
+                        mark_all_notifications_read()
+
+                        st.rerun()
+
+            if notifications.empty:
+
                 st.info(
-                    f"{unread_count} notification(s) require review."
+                    "No active welfare notifications."
                 )
 
-            # ---------------------------------------------
-            # Individual Notifications
-            # ---------------------------------------------
+            else:
 
-            for _, notification in notifications.iterrows():
+                for _, notification in (
+                    notifications.iterrows()
+                ):
 
-                notification_id = int(
-                    notification["notification_id"]
-                )
+                    risk = float(
+                        notification["risk_score"]
+                    )
 
-                personnel_id = notification["personnel_id"]
+                    unread = (
+                        int(
+                            notification["is_read"]
+                        ) == 0
+                    )
 
-                risk_score = float(
-                    notification["risk_score"]
-                )
+                    # -------------------------------------
+                    # Notification card
+                    # -------------------------------------
 
-                is_unread = (
-                    int(notification["is_read"]) == 0
-                )
+                    if unread:
 
-                if is_unread:
+                        st.markdown(
+                            "### 🔴 New Welfare Alert"
+                        )
 
-                    border_color = "#e05252"
-                    background_color = "#241414"
+                    else:
 
-                else:
+                        st.markdown(
+                            "### 🟠 Welfare Alert"
+                        )
 
-                    border_color = "#555555"
-                    background_color = "#191919"
-
-
-                st.markdown(
-                    f"""
-                    <div style="
-                        background:{background_color};
-                        border:1px solid {border_color};
-                        border-left:5px solid #e05252;
-                        border-radius:8px;
-                        padding:16px;
-                        margin-bottom:10px;
-                    ">
+                    st.markdown(
+                        f"""
+                        <div style="
+                            border:1px solid #d9dee8;
+                            border-radius:12px;
+                            padding:18px;
+                            margin-bottom:12px;
+                            background:#f8fbff;
+                        ">
 
                         <div style="
                             display:flex;
@@ -612,811 +1162,474 @@ if app_mode == "Welfare Officer Dashboard":
                             align-items:center;
                         ">
 
-                            <div style="
-                                font-size:16px;
-                                font-weight:700;
-                                color:#ffffff;
-                            ">
-                                🚨 High-Risk Welfare Alert
+                            <div>
+                                <h3 style="margin:0;">
+                                    Personnel
+                                    {notification['personnel_id']}
+                                </h3>
+
+                                <p style="
+                                    margin:4px 0 0 0;
+                                    color:#666;
+                                ">
+                                    {notification['posting_type']}
+                                </p>
                             </div>
 
                             <div style="
-                                font-size:18px;
+                                font-size:28px;
                                 font-weight:700;
-                                color:#ff9999;
                             ">
-                                {risk_score:.2f}
+                                {risk:.2f}
                             </div>
 
                         </div>
 
-                        <div style="
-                            margin-top:10px;
-                            color:#dddddd;
-                            font-size:14px;
-                        ">
+                        <hr>
 
-                            <b>Personnel ID:</b>
-                            {personnel_id}
+                        <b>Risk Tier:</b>
+                        {notification['risk_tier']}
+                        <br>
 
-                            &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <b>Continuous Duty:</b>
+                        {int(notification['continuous_duty_days'])} days
+                        <br>
 
-                            <b>Risk Tier:</b>
-                            {notification["risk_tier"]}
+                        <b>Leave Due:</b>
+                        {int(notification['leave_days_due'])} days
+                        <br>
 
-                        </div>
+                        <b>Overtime:</b>
+                        {float(notification['overtime_hours_30d']):.1f}
+                        hrs / 30 days
+                        <br>
 
-                        <div style="
-                            margin-top:8px;
-                            color:#aaaaaa;
-                            font-size:13px;
-                        ">
+                        <b>Self-Assessment:</b>
+                        {float(notification['self_assessment_score']):.0f}/25
 
-                            <b>Posting:</b>
-                            {notification["posting_type"]}
+                        <br><br>
 
-                            &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <b>Key Signals</b>
+                        <br>
+                        {str(notification['key_signals']).replace(chr(10), '<br>')}
 
-                            <b>Continuous Duty:</b>
-                            {notification["continuous_duty_days"]} days
+                        <br><br>
 
-                            &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <b>Suggested Welfare Action</b>
+                        <br>
+                        {str(notification['suggested_actions']).replace(chr(10), '<br>')}
 
-                            <b>Overtime:</b>
-                            {notification["overtime_hours_30d"]} hrs
+                        <br><br>
 
-                        </div>
-
-                        <div style="
-                            margin-top:12px;
-                            background:#202020;
-                            border-radius:6px;
-                            padding:10px;
-                            color:#eeeeee;
-                            font-size:13px;
-                        ">
-
-                            <b>Possible Stress / Strain Signals</b>
-                            <br><br>
-                            {notification["key_signals"]}
+                        <b>Guidance:</b>
+                        {notification['talking_point']}
 
                         </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
-                        <div style="
-                            margin-top:10px;
-                            color:#cccccc;
-                            font-size:13px;
-                        ">
+                    button_col1, button_col2 = (
+                        st.columns(2)
+                    )
 
-                            <b>Suggested Welfare Approach:</b>
-                            {notification["talking_point"]}
+                    with button_col1:
 
-                        </div>
+                        if unread:
 
-                        <div style="
-                            margin-top:10px;
-                            color:#777777;
-                            font-size:11px;
-                        ">
+                            if st.button(
+                                "✓ Mark as Read",
+                                key=(
+                                    f"read_"
+                                    f"{notification['notification_id']}"
+                                )
+                            ):
 
-                            Alert generated:
-                            {notification["created_at"]}
+                                mark_notification_read(
+                                    notification[
+                                        "notification_id"
+                                    ]
+                                )
 
-                        </div>
+                                st.rerun()
 
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                button_col1, button_col2 = st.columns([1, 1])
-
-                with button_col1:
-
-                    if is_unread:
+                    with button_col2:
 
                         if st.button(
-                            "✓ Mark as Read",
-                            key=f"read_{notification_id}",
-                            use_container_width=True
+                            "Clear Alert",
+                            key=(
+                                f"clear_"
+                                f"{notification['notification_id']}"
+                            )
                         ):
 
-                            mark_notification_read(
-                                notification_id
-                            )
-
-                            log_audit_event(
-                                "MARK_WELFARE_NOTIFICATION_READ",
-                                personnel_id
+                            clear_notification(
+                                notification[
+                                    "notification_id"
+                                ]
                             )
 
                             st.rerun()
 
-                with button_col2:
-
-                    if st.button(
-                        "Clear Alert",
-                        key=f"clear_{notification_id}",
-                        use_container_width=True
-                    ):
-
-                        clear_notification(
-                            notification_id
-                        )
-
-                        log_audit_event(
-                            "CLEAR_WELFARE_NOTIFICATION",
-                            personnel_id
-                        )
-
-                        st.rerun()
+                    st.markdown("---")
 
 
-        st.markdown("---")
-
+    notification_center()
 
     # -----------------------------------------------------
-    # ETHICAL COMPLIANCE NOTICE
+    # Ethical notice
     # -----------------------------------------------------
 
     st.warning(
         "**ETHICAL COMPLIANCE & USAGE NOTICE:**\n\n"
-        "• **Non-Clinical:** This system is **not a diagnostic medical tool** "
-        "and does not evaluate psychological disorders.\n"
-        "• **No Disciplinary Use:** Outputs reflect operational stress "
-        "indicators and must not be used for disciplinary actions, "
-        "fitness-for-duty boards, or negative performance appraisals.\n"
-        "• **Confidentiality & Audit:** Voluntary check-in signals are "
-        "isolated. Every query and record inspection is logged for ethical governance."
+        "• **Non-Clinical:** This system is not a "
+        "diagnostic medical tool.\n\n"
+        "• **No Disciplinary Use:** Outputs reflect "
+        "operational welfare indicators and should not "
+        "be used for disciplinary actions, fitness-for-duty "
+        "boards, or negative performance appraisals.\n\n"
+        "• **Confidentiality:** Voluntary check-in signals "
+        "should be handled confidentially and used only "
+        "for appropriate welfare support."
     )
 
     st.markdown("---")
 
+    # -----------------------------------------------------
+    # Summary metrics
+    # -----------------------------------------------------
 
-    # =====================================================
-    # HIGH-RISK CASES
-    # =====================================================
+    if not df.empty:
+
+        high_count = len(
+            df[df["risk_score"] >= 0.70]
+        )
+
+        critical_count = len(
+            df[
+                df["risk_score"]
+                >= NOTIFICATION_THRESHOLD
+            ]
+        )
+
+        average_risk = (
+            df["risk_score"].mean()
+        )
+
+        total_personnel = len(df)
+
+        metric1, metric2, metric3, metric4 = (
+            st.columns(4)
+        )
+
+        with metric1:
+
+            st.metric(
+                "Personnel Monitored",
+                total_personnel
+            )
+
+        with metric2:
+
+            st.metric(
+                "High Risk",
+                high_count
+            )
+
+        with metric3:
+
+            st.metric(
+                "Welfare Alerts",
+                critical_count
+            )
+
+        with metric4:
+
+            st.metric(
+                "Average Risk",
+                f"{average_risk:.2f}"
+            )
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # Priority welfare cases
+    # -----------------------------------------------------
+
+    st.subheader(
+        "Priority Welfare Cases"
+    )
 
     critical_cases = df[
-        df["risk_score"] >= HIGH_RISK_THRESHOLD
-    ]
-
-    if not critical_cases.empty:
-
-        st.markdown(
-            """
-            <div style="
-                background:linear-gradient(90deg,#3a1515,#241212);
-                border:1px solid #b84a4a;
-                border-left:6px solid #e05252;
-                border-radius:8px;
-                padding:16px 20px;
-                margin-bottom:20px;
-            ">
-
-                <div style="
-                    font-size:18px;
-                    font-weight:700;
-                    color:#ffdddd;
-                ">
-                    🚨 Welfare Attention Required
-                </div>
-
-                <div style="
-                    font-size:13px;
-                    color:#d8bcbc;
-                    margin-top:5px;
-                ">
-                    Personnel with elevated operational strain
-                    require confidential welfare follow-up.
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-        for _, person in critical_cases.iterrows():
-
-            st.markdown(
-                f"""
-                <div style="
-                    background:#171717;
-                    border:1px solid #444;
-                    border-radius:8px;
-                    padding:18px;
-                    margin-bottom:12px;
-                ">
-
-                    <div style="
-                        display:flex;
-                        justify-content:space-between;
-                        margin-bottom:12px;
-                    ">
-
-                        <div>
-
-                            <span style="
-                                font-size:17px;
-                                font-weight:700;
-                                color:#ffffff;
-                            ">
-                                Personnel {person['personnel_id']}
-                            </span>
-
-                            <span style="
-                                margin-left:10px;
-                                padding:4px 9px;
-                                border-radius:12px;
-                                background:#542020;
-                                color:#ffb5b5;
-                                font-size:12px;
-                                font-weight:600;
-                            ">
-                                HIGH PRIORITY
-                            </span>
-
-                        </div>
-
-                        <div style="
-                            font-size:18px;
-                            font-weight:700;
-                            color:#ff8f8f;
-                        ">
-                            Risk: {person['risk_score']:.2f}
-                        </div>
-
-                    </div>
-
-
-                    <div style="
-                        display:grid;
-                        grid-template-columns:repeat(3,1fr);
-                        gap:12px;
-                        margin-bottom:14px;
-                    ">
-
-                        <div>
-                            <div style="color:#888;font-size:12px;">
-                                Posting
-                            </div>
-
-                            <div style="color:#eee;font-size:14px;">
-                                {person['posting_type']}
-                            </div>
-                        </div>
-
-
-                        <div>
-                            <div style="color:#888;font-size:12px;">
-                                Continuous Duty
-                            </div>
-
-                            <div style="color:#eee;font-size:14px;">
-                                {person['continuous_duty_days']} days
-                            </div>
-                        </div>
-
-
-                        <div>
-                            <div style="color:#888;font-size:12px;">
-                                Overtime — 30 Days
-                            </div>
-
-                            <div style="color:#eee;font-size:14px;">
-                                {person['overtime_hours_last_30d']} hrs
-                            </div>
-                        </div>
-
-                    </div>
-
-
-                    <div style="
-                        background:#202020;
-                        border-radius:6px;
-                        padding:12px;
-                        margin-bottom:10px;
-                    ">
-
-                        <div style="
-                            color:#999;
-                            font-size:12px;
-                            margin-bottom:5px;
-                        ">
-                            POSSIBLE STRESS / STRAIN SIGNALS
-                        </div>
-
-                        <div style="
-                            color:#f0f0f0;
-                            font-size:14px;
-                        ">
-                            {person['key_signals']}
-                        </div>
-
-                    </div>
-
-
-                    <div style="
-                        color:#c9c9c9;
-                        font-size:13px;
-                    ">
-
-                        <b>Suggested welfare approach:</b>
-                        {person['talking_point']}
-
-                    </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-
-    # =====================================================
-    # OPERATIONAL HEALTH & COMPLIANCE TRAY
-    # =====================================================
-
-    overdue_records = (
-        get_overdue_personnel()
-        if is_past_deadline
-        else []
-    )
-
-    with st.container():
-
-        st.markdown(
-            f"""
-            <div style="
-                background:rgba(255,255,255,0.02);
-                border:1px solid #333;
-                padding:10px 16px;
-                border-radius:6px;
-                margin-bottom:16px;
-            ">
-
-                <div style="
-                    display:flex;
-                    justify-content:space-between;
-                    align-items:center;
-                ">
-
-                    <span style="
-                        font-weight:600;
-                        font-size:0.95rem;
-                        color:#e0e0e0;
-                    ">
-                        Operational Health & Reporting Triage
-                    </span>
-
-                    <span style="
-                        font-size:0.85rem;
-                        color:#888;
-                    ">
-                        Synced: {current_time_str}
-                    </span>
-
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-        col_tray1, col_tray2 = st.columns(2)
-
-
-        # -------------------------------------------------
-        # Priority Welfare Reviews
-        # -------------------------------------------------
-
-        with col_tray1:
-
-            if not critical_cases.empty:
-
-                with st.expander(
-                    f"⚠️ Priority Welfare Reviews ({len(critical_cases)})",
-                    expanded=False
-                ):
-
-                    st.caption(
-                        "Personnel exceeding elevated operational "
-                        "strain criteria (P ≥ 0.75):"
-                    )
-
-                    for _, row in critical_cases.iterrows():
-
-                        st.markdown(
-                            f"""
-                            • **`{row['personnel_id']}`**
-                            — Assessed P: `{row['risk_score']:.2f}`
-                            <br>
-                            &nbsp;&nbsp;&nbsp;&nbsp;
-                            <small style='color:#888;'>
-                            Signals: {row['key_signals']}
-                            </small>
-                            """,
-                            unsafe_allow_html=True
-                        )
-
-            else:
-
-                st.success(
-                    "✓ No personnel exceeding critical strain threshold."
-                )
-
-
-        # -------------------------------------------------
-        # Daily Reporting Window
-        # -------------------------------------------------
-
-        with col_tray2:
-
-            if is_past_deadline:
-
-                if overdue_records:
-
-                    with st.expander(
-                        f"🕒 Check-In Non-Responsive ({len(overdue_records)})",
-                        expanded=False
-                    ):
-
-                        st.caption(
-                            f"Reporting window closed at "
-                            f"{CHECKIN_DEADLINE.strftime('%H:%M')} IST."
-                        )
-
-                        for pid, posting in overdue_records:
-
-                            st.markdown(
-                                f"• **`{pid}`** ({posting}) — "
-                                f"*Pending check-in*"
-                            )
-
-                else:
-
-                    st.success(
-                        "✓ All personnel completed check-in for today."
-                    )
-
-            else:
-
-                st.info(
-                    f"⏳ Reporting window open. Daily cutoff: "
-                    f"**{CHECKIN_DEADLINE.strftime('%H:%M')} IST**."
-                )
-
-
-    # =====================================================
-    # SUMMARY METRICS
-    # =====================================================
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    total_count = len(df)
-
-    high_count = len(
-        df[df["risk_tier"] == "High"]
-    )
-
-    mod_count = len(
-        df[df["risk_tier"] == "Moderate"]
-    )
-
-    low_count = len(
-        df[df["risk_tier"] == "Low"]
-    )
-
-
-    col1.metric(
-        "Total Monitored",
-        total_count
-    )
-
-    col2.metric(
-        "High Priority Welfare Review",
-        high_count,
-        delta=(
-            f"{round((high_count / total_count) * 100, 1)}%"
-            if total_count > 0
-            else "0%"
-        ),
-        delta_color="inverse"
-    )
-
-    col3.metric(
-        "Moderate Strain",
-        mod_count
-    )
-
-    col4.metric(
-        "Baseline / Routine",
-        low_count
-    )
-
-
-    st.markdown("---")
-
-
-    # =====================================================
-    # FILTERS
-    # =====================================================
-
-    filter_col1, filter_col2 = st.columns([1, 2])
-
-
-    with filter_col1:
-
-        selected_tier = st.selectbox(
-            "Filter by Operational Strain Tier:",
-            options=[
-                "All",
-                "High",
-                "Moderate",
-                "Low"
-            ],
-            index=0
-        )
-
-
-    with filter_col2:
-
-        search_id = st.text_input(
-            "Search Pseudonymous Service ID (e.g., CRP-1001):",
-            ""
-        ).strip()
-
-
-    filtered_df = df.copy()
-
-
-    if selected_tier != "All":
-
-        filtered_df = filtered_df[
-            filtered_df["risk_tier"] == selected_tier
-        ]
-
-
-    if search_id:
-
-        filtered_df = filtered_df[
-            filtered_df["personnel_id"]
-            .str.contains(
-                search_id,
-                case=False,
-                na=False
-            )
-        ]
-
-
-    log_audit_event(
-        f"VIEW_FILTERED_ROSTER_TIER_{selected_tier}",
-        search_id if search_id else "ROSTER"
-    )
-
-
-    # =====================================================
-    # PERSONNEL TABLE
-    # =====================================================
-
-    st.subheader(
-        f"Personnel Roster ({len(filtered_df)} records)"
-    )
-
-
-    display_cols = [
-        "personnel_id",
-        "risk_tier",
-        "risk_score",
-        "continuous_duty_days",
-        "leave_days_due",
-        "overtime_hours_last_30d",
-        "key_signals",
-        "talking_point"
-    ]
-
-
-    export_df = filtered_df[
-        display_cols
-    ].rename(
-        columns={
-            "personnel_id": "Service ID",
-            "risk_tier": "Strain Tier",
-            "risk_score": "Risk Probability",
-            "continuous_duty_days": "Continuous Duty (Days)",
-            "leave_days_due": "Leave Due (Days)",
-            "overtime_hours_last_30d": "Overtime 30d (Hrs)",
-            "key_signals": "Primary Contributing Signals",
-            "talking_point": "Recommended Supportive Action"
-        }
-    )
-
-
-    st.dataframe(
-        export_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-    # =====================================================
-    # CSV EXPORT
-    # =====================================================
-
-    csv_data = export_df.to_csv(
-        index=False
-    ).encode("utf-8")
-
-
-    st.download_button(
-        label="📥 Export Welfare Review List (CSV)",
-        data=csv_data,
-        file_name=(
-            f"welfare_review_"
-            f"{selected_tier.lower()}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        ),
-        mime="text/csv",
-        on_click=lambda: log_audit_event(
-            f"EXPORT_CSV_TIER_{selected_tier}"
-        )
-    )
-
-
-    st.markdown("---")
-
-
-    # =====================================================
-    # INDIVIDUAL INSPECTOR
-    # =====================================================
-
-    st.subheader(
-        "🔍 Personnel Case Drilldown"
-    )
-
-
-    available_ids = filtered_df[
-        "personnel_id"
-    ].tolist()
-
-
-    if not available_ids:
-
-        st.info(
-            "No personnel match the current filter criteria."
+        df["risk_score"]
+        >= NOTIFICATION_THRESHOLD
+    ].copy()
+
+    if critical_cases.empty:
+
+        st.success(
+            "No personnel currently meet the "
+            "0.75 notification threshold."
         )
 
     else:
 
-        inspect_id = st.selectbox(
-            "Select Service ID for Detailed Dossier:",
-            options=available_ids,
-            index=0
+        display_columns = [
+            "personnel_id",
+            "risk_score",
+            "risk_tier",
+            "posting",
+            "continuous_duty_days",
+            "leave_days_due",
+            "overtime_hours_last_30d",
+            "self_assessment_score"
+        ]
+
+        st.dataframe(
+            critical_cases[
+                display_columns
+            ].rename(
+                columns={
+                    "personnel_id": "Personnel ID",
+                    "risk_score": "Risk Score",
+                    "risk_tier": "Risk Tier",
+                    "posting": "Posting",
+                    "continuous_duty_days": "Continuous Duty",
+                    "leave_days_due": "Leave Due",
+                    "overtime_hours_last_30d": "Overtime / 30d",
+                    "self_assessment_score": "Self Check-in"
+                }
+            ),
+            use_container_width=True,
+            hide_index=True
         )
 
+    # -----------------------------------------------------
+    # Full personnel table
+    # -----------------------------------------------------
 
-        case = filtered_df[
-            filtered_df["personnel_id"] == inspect_id
-        ].iloc[0]
+    st.markdown("---")
 
+    st.subheader(
+        "All Personnel"
+    )
 
-        log_audit_event(
-            "VIEW_CASE_DRILLDOWN",
-            inspect_id
+    if not df.empty:
+
+        table_columns = [
+            "personnel_id",
+            "risk_score",
+            "risk_tier",
+            "posting",
+            "continuous_duty_days",
+            "leave_days_due",
+            "overtime_hours_last_30d",
+            "self_assessment_score"
+        ]
+
+        st.dataframe(
+            df[
+                table_columns
+            ].rename(
+                columns={
+                    "personnel_id": "Personnel ID",
+                    "risk_score": "Risk Score",
+                    "risk_tier": "Risk Tier",
+                    "posting": "Posting",
+                    "continuous_duty_days": "Continuous Duty",
+                    "leave_days_due": "Leave Due",
+                    "overtime_hours_last_30d": "Overtime / 30d",
+                    "self_assessment_score": "Self Check-in"
+                }
+            ),
+            use_container_width=True,
+            hide_index=True
         )
 
+    # -----------------------------------------------------
+    # Detailed case
+    # -----------------------------------------------------
 
-        dossier_col1, dossier_col2 = st.columns(2)
+    st.markdown("---")
 
+    st.subheader(
+        "Personnel Case Explorer"
+    )
 
-        with dossier_col1:
+    if not df.empty:
 
-            st.write(
-                f"**Service ID:** `{case['personnel_id']}`"
+        selected_id = st.selectbox(
+            "Select Personnel",
+            df["personnel_id"].tolist()
+        )
+
+        selected_rows = df[
+            df["personnel_id"]
+            == selected_id
+        ]
+
+        if not selected_rows.empty:
+
+            person = selected_rows.iloc[0]
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+
+                st.metric(
+                    "Risk Score",
+                    f"{float(person['risk_score']):.2f}"
+                )
+
+            with col2:
+
+                st.metric(
+                    "Risk Tier",
+                    person["risk_tier"]
+                )
+
+            with col3:
+
+                st.metric(
+                    "Self Check-in",
+                    f"{float(person['self_assessment_score']):.0f}/25"
+                )
+
+            st.markdown("### Key Signals")
+
+            for signal in person[
+                "key_signals"
+            ]:
+
+                st.write(
+                    f"• {signal}"
+                )
+
+            st.markdown(
+                "### Suggested Welfare Actions"
             )
 
-            st.write(
-                f"**Assessed Operational Tier:** "
-                f"`{case['risk_tier']}` "
-                f"(Calculated Probability: "
-                f"`{case['risk_score']:.2f}`)"
-            )
+            for action in person[
+                "suggested_actions"
+            ]:
 
-            st.write(
-                f"**Continuous Duty Duration:** "
-                f"{case['continuous_duty_days']} days"
-            )
-
-            st.write(
-                f"**Accrued Leave Backlog:** "
-                f"{case['leave_days_due']} days"
-            )
-
-            st.write(
-                f"**Overtime Logged (30d):** "
-                f"{case['overtime_hours_last_30d']} hours"
-            )
-
-            st.write(
-                f"**Voluntary Check-in Submitted:** "
-                f"{'Yes' if case['has_self_assessment'] == 1 else 'No'}"
-            )
-
-
-        with dossier_col2:
+                st.write(
+                    f"• {action}"
+                )
 
             st.info(
-                f"**Key Operational Signals:**\n\n"
-                f"{case['key_signals']}"
+                person["talking_point"]
             )
 
-            st.success(
-                f"**Suggested Welfare Approach:**\n\n"
-                f"{case['talking_point']}"
-            )
+    # -----------------------------------------------------
+    # Overdue check-ins
+    # -----------------------------------------------------
+
+    st.markdown("---")
+
+    current_time = get_ist_now()
+
+    overdue_records = (
+        get_overdue_personnel()
+        if current_time.time() >= CHECKIN_DEADLINE
+        else []
+    )
+
+    st.subheader(
+        "Overdue Check-ins"
+    )
+
+    if overdue_records:
+
+        overdue_df = pd.DataFrame(
+            overdue_records,
+            columns=[
+                "Personnel ID",
+                "Posting"
+            ]
+        )
+
+        st.dataframe(
+            overdue_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    else:
+
+        st.success(
+            "No overdue check-ins currently detected."
+        )
+
+    # -----------------------------------------------------
+    # CSV export
+    # -----------------------------------------------------
+
+    st.markdown("---")
+
+    if not df.empty:
+
+        csv_data = df.to_csv(
+            index=False
+        ).encode("utf-8")
+
+        st.download_button(
+            "⬇️ Export Welfare Risk Data",
+            data=csv_data,
+            file_name="welfare_risk_report.csv",
+            mime="text/csv"
+        )
 
 
 # =========================================================
-# VIEW 2: PERSONNEL WELLNESS SELF-CHECK-IN
+# PERSONNEL SELF CHECK-IN
 # =========================================================
 
 else:
 
-    # -----------------------------------------------------
-    # Session State
-    # -----------------------------------------------------
+    st.title(
+        "🛡️ Personnel Wellness Self-Check-in"
+    )
 
-    if "submitted" not in st.session_state:
-
-        st.session_state.submitted = False
-
-
-    if "biometric_authenticated" not in st.session_state:
-
-        st.session_state.biometric_authenticated = False
-
-
-    # -----------------------------------------------------
-    # Header
-    # -----------------------------------------------------
+    st.caption(
+        "Voluntary • Confidential • Non-Clinical"
+    )
 
     st.markdown(
         """
-        <h2 style='margin-bottom:0px;font-weight:700;'>
-            🛡️ Personnel Wellness Self-Check-in
-        </h2>
+        <div style="
+            padding:18px;
+            border-radius:12px;
+            background:#f4f7fb;
+            border:1px solid #dce3ec;
+        ">
 
-        <p style='
-            color:#6c757d;
-            font-size:0.95rem;
-            margin-top:4px;
-            margin-bottom:20px;
-        '>
-            Confidential • Voluntary • Non-Clinical •
-            Biometric Verification Guard
-        </p>
+        This voluntary check-in helps the welfare team
+        identify operational strain indicators that may
+        require appropriate welfare support.
+
+        The system is not a medical diagnostic tool.
+
+        </div>
         """,
         unsafe_allow_html=True
     )
 
+    st.markdown("---")
 
-    # =====================================================
-    # AFTER SUBMISSION
-    # =====================================================
+    # -----------------------------------------------------
+    # Already submitted
+    # -----------------------------------------------------
 
     if st.session_state.submitted:
 
         st.success(
-            "Your check-in has been submitted securely. "
-            "Thank you for taking a moment for your well-being."
+            "✓ Your check-in has been submitted securely."
         )
 
         st.info(
-            "To protect submission integrity, only one "
-            "check-in is permitted per session."
+            "Only one check-in is permitted per day."
         )
-
 
         if st.button(
             "Submit Another Check-in"
@@ -1428,58 +1641,37 @@ else:
 
             st.rerun()
 
-
-    # =====================================================
-    # CHECK-IN FORM
-    # =====================================================
-
     else:
-
-        st.info(
-            "**Voluntary & Non-Clinical Notice:**\n\n"
-            "This tool is strictly voluntary and designed "
-            "to support personal well-being. It does not "
-            "provide medical diagnoses, psychological "
-            "evaluations, or fitness-for-duty assessments."
-        )
-
-
-        valid_ids = get_valid_personnel_ids()
-
 
         # -------------------------------------------------
         # Identity
         # -------------------------------------------------
 
-        st.markdown(
-            "### 1. Identity & Biometric Verification"
+        st.subheader(
+            "1. Identity & Verification"
         )
 
+        valid_ids = get_valid_personnel_ids()
 
         personnel_id = st.selectbox(
-            "Select Your Pseudonymous Service ID",
-            options=[""] + valid_ids,
-            help=(
-                "Select your assigned pseudonymous ID "
-                "to begin authentication."
-            )
+            "Select Your Service ID",
+            options=[""] + valid_ids
         )
-
 
         if personnel_id:
 
             if not st.session_state.biometric_authenticated:
 
-                col1, col2 = st.columns([2, 1])
-
+                col1, col2 = st.columns(
+                    [2, 1]
+                )
 
                 with col1:
 
                     st.caption(
-                        f"Hardware Token / Scanner awaiting "
-                        f"input for `{personnel_id}`..."
+                        f"Hardware Token / Scanner "
+                        f"awaiting input for `{personnel_id}`..."
                     )
-
 
                 with col2:
 
@@ -1491,15 +1683,11 @@ else:
 
                         st.rerun()
 
-
             else:
 
                 st.success(
-                    f"✓ Biometric Identity Confirmed: "
-                    f"Match verified for `{personnel_id}` "
-                    f"via offline token handshake."
+                    f"✓ Identity verified for `{personnel_id}`"
                 )
-
 
                 if st.button(
                     "Reset Authentication"
@@ -1509,27 +1697,22 @@ else:
 
                     st.rerun()
 
-
         st.markdown("---")
-
 
         # -------------------------------------------------
         # Assessment
         # -------------------------------------------------
 
-        st.markdown(
-            "### 2. Daily Well-Being Assessment"
+        st.subheader(
+            "2. Daily Well-Being Assessment"
         )
-
 
         if not st.session_state.biometric_authenticated:
 
             st.warning(
-                "Please select your Service ID and complete "
-                "the Biometric Scan above to unlock the "
-                "assessment form."
+                "Please select your Service ID and "
+                "complete verification above."
             )
-
 
         else:
 
@@ -1544,7 +1727,6 @@ else:
                     3
                 )
 
-
                 q2 = st.slider(
                     "2. My current daily workload feels manageable.",
                     1,
@@ -1552,15 +1734,12 @@ else:
                     3
                 )
 
-
                 q3 = st.slider(
-                    "3. I have maintained steady physical and "
-                    "mental energy levels today.",
+                    "3. I have maintained steady physical and mental energy levels today.",
                     1,
                     5,
                     3
                 )
-
 
                 q4 = st.slider(
                     "4. I feel supported by my peer group and team.",
@@ -1569,7 +1748,6 @@ else:
                     3
                 )
 
-
                 q5 = st.slider(
                     "5. My overall morale and motivation remain steady.",
                     1,
@@ -1577,43 +1755,37 @@ else:
                     3
                 )
 
-
                 st.markdown("---")
-
 
                 consent_given = st.checkbox(
                     "I voluntarily choose to share this wellness self-check-in."
                 )
 
-
                 submit_btn = st.form_submit_button(
                     "Submit Check-in"
                 )
 
-
-            # =================================================
-            # SUBMISSION PROCESS
-            # =================================================
+            # -------------------------------------------------
+            # SUBMIT
+            # -------------------------------------------------
 
             if submit_btn:
 
-                clean_id = personnel_id.strip()
-
+                clean_id = (
+                    personnel_id.strip()
+                )
 
                 if not clean_id:
 
                     st.error(
-                        "Please select a valid pseudonymous Service ID."
+                        "Please select a valid Service ID."
                     )
-
 
                 elif not consent_given:
 
                     st.warning(
-                        "Please check the consent confirmation "
-                        "box before submitting."
+                        "Please confirm voluntary consent."
                     )
-
 
                 else:
 
@@ -1621,161 +1793,185 @@ else:
                         q1 + q2 + q3 + q4 + q5
                     )
 
-
                     try:
 
-                        conn = sqlite3.connect(DB_NAME)
+                        conn = sqlite3.connect(
+                            DB_NAME
+                        )
 
                         cursor = conn.cursor()
 
+                        # ---------------------------------
+                        # Check today's submission
+                        # ---------------------------------
 
-                        # -------------------------------------
-                        # Prevent duplicate submission today
-                        # -------------------------------------
-
-                        today_str = now_ist.strftime(
-                            "%Y-%m-%d"
-                        )
-
-
-                        cursor.execute(
-                            """
+                        cursor.execute("""
                             SELECT COUNT(*)
-                            FROM self_assessments
-                            WHERE personnel_id = ?
-                            AND date(submission_timestamp) = ?
-                            """,
-                            (
-                                clean_id,
-                                today_str
-                            )
-                        )
 
+                            FROM self_assessments
+
+                            WHERE
+                                personnel_id = ?
+
+                                AND date(
+                                    submission_timestamp
+                                ) = ?
+                        """, (
+                            clean_id,
+                            get_ist_date()
+                        ))
 
                         already_submitted_today = (
                             cursor.fetchone()[0] > 0
                         )
 
-
                         if already_submitted_today:
 
-                            st.warning(
-                                f"ID {clean_id} has already logged "
-                                "a check-in for today. Only one "
-                                "submission per day is allowed."
-                            )
+                            conn.close()
 
+                            st.warning(
+                                f"ID {clean_id} has already "
+                                f"logged a check-in today."
+                            )
 
                         else:
 
                             # ---------------------------------
-                            # Save check-in
+                            # Insert assessment
                             # ---------------------------------
 
-                            cursor.execute(
-                                """
+                            cursor.execute("""
                                 INSERT INTO self_assessments
                                 (
                                     personnel_id,
-                                    self_assessment_score,
-                                    submission_timestamp
+                                    submission_timestamp,
+                                    self_assessment_score
                                 )
-                                VALUES (?, ?, ?)
-                                """,
-                                (
-                                    clean_id,
-                                    total_score,
-                                    now_ist.strftime(
-                                        "%Y-%m-%d %H:%M:%S"
-                                    )
-                                )
-                            )
 
+                                VALUES (?, ?, ?)
+                            """, (
+                                clean_id,
+                                get_ist_now().strftime(
+                                    "%Y-%m-%d %H:%M:%S"
+                                ),
+                                total_score
+                            ))
+
+                            # Get exact assessment ID
+                            assessment_id = (
+                                cursor.lastrowid
+                            )
 
                             conn.commit()
 
                             conn.close()
 
-
                             # ---------------------------------
-                            # Clear model cache
+                            # IMPORTANT:
+                            # Clear cached model results
                             # ---------------------------------
 
                             st.cache_data.clear()
 
+                            # ---------------------------------
+                            # Immediately run inference
+                            # ---------------------------------
+
+                            from risk_engine import (
+                                run_risk_inference
+                            )
+
+                            fresh_df = (
+                                run_risk_inference(
+                                    DB_NAME
+                                )
+                            )
 
                             # ---------------------------------
-                            # Re-run risk model immediately
+                            # Find the exact person
                             # ---------------------------------
 
-                            try:
+                            matching = fresh_df[
+                                fresh_df[
+                                    "personnel_id"
+                                ] == clean_id
+                            ]
 
-                                from risk_engine import run_risk_inference
+                            notification_created = False
 
-                                updated_df = (
-                                    run_risk_inference()
+                            if not matching.empty:
+
+                                person = (
+                                    matching.iloc[0]
                                 )
 
+                                # Make sure the notification
+                                # corresponds to THIS submission.
+                                person = person.copy()
+
+                                person[
+                                    "assessment_id"
+                                ] = assessment_id
 
                                 # ---------------------------------
-                                # Find submitted personnel
+                                # THIS IS THE ACTUAL TRIGGER
                                 # ---------------------------------
 
-                                submitted_person = (
-                                    updated_df[
-                                        updated_df["personnel_id"]
-                                        == clean_id
-                                    ]
+                                current_risk = float(
+                                    person["risk_score"]
                                 )
 
+                                if (
+                                    current_risk
+                                    >= NOTIFICATION_THRESHOLD
+                                ):
 
-                                if not submitted_person.empty:
-
-                                    person = (
-                                        submitted_person.iloc[0]
-                                    )
-
-
-                                    current_risk = float(
-                                        person["risk_score"]
-                                    )
-
-
-                                    # ---------------------------------
-                                    # CREATE NOTIFICATION
-                                    # ---------------------------------
-
-                                    if (
-                                        current_risk
-                                        >= HIGH_RISK_THRESHOLD
-                                    ):
-
+                                    notification_created = (
                                         create_high_risk_notification(
                                             person
                                         )
-
-
-                            except Exception as model_error:
-
-                                print(
-                                    "Risk notification model error:",
-                                    model_error
-                                )
-
+                                    )
 
                             # ---------------------------------
-                            # Successful submission
+                            # Store success state
                             # ---------------------------------
 
                             st.session_state.submitted = True
 
                             st.session_state.biometric_authenticated = False
 
-                            st.rerun()
+                            # ---------------------------------
+                            # Show result
+                            # ---------------------------------
 
+                            if notification_created:
+
+                                st.success(
+                                    "✓ Check-in submitted securely."
+                                )
+
+                                st.info(
+                                    "Your check-in has been "
+                                    "recorded and routed to the "
+                                    "appropriate welfare review workflow."
+                                )
+
+                            else:
+
+                                st.success(
+                                    "✓ Check-in submitted securely."
+                                )
+
+                            st.rerun()
 
                     except sqlite3.Error as e:
 
                         st.error(
                             f"Database error: {e}"
+                        )
+
+                    except Exception as e:
+
+                        st.error(
+                            f"Processing error: {e}"
                         )
