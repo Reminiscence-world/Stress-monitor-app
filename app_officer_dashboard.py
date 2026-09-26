@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import sqlite3import auth 
+import sqlite3
+import auth 
 
 from datetime import datetime
 
