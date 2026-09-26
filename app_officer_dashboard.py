@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -1308,4 +1307,3 @@ else:
             f"**Suggested Welfare Approach:**\n\n"
             f"{case['talking_point']}"
         )
-```
