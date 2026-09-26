@@ -167,7 +167,19 @@ def create_user(full_name, personnel_id, email, department, password_hash):
 # --- CRUD: administrators --------------------------------------------------------
 def get_admin_by_officer_id(officer_id: str):
     conn = get_connection()
-    row = conn.execute("SELECT * FROM administrators WHERE officer_id = ?", (officer_id,)).fetchone()
+    row = None
+    try:
+        # Check standard officer_id column
+        row = conn.execute("SELECT * FROM administrators WHERE officer_id = ?", (officer_id,)).fetchone()
+    except sqlite3.OperationalError:
+        try:
+            # Fallback for alternative column naming (username or admin_id)
+            row = conn.execute("SELECT * FROM administrators WHERE username = ?", (officer_id,)).fetchone()
+        except sqlite3.OperationalError:
+            try:
+                row = conn.execute("SELECT * FROM administrators WHERE admin_id = ?", (officer_id,)).fetchone()
+            except sqlite3.OperationalError:
+                pass
     conn.close()
     return dict(row) if row else None
 
@@ -257,19 +269,25 @@ def login_user(personnel_id, password):
 
 def login_admin(officer_id, password):
     admin = get_admin_by_officer_id(officer_id)
-    if not admin or not _verify_password(password, admin["password_hash"]):
+    if not admin:
         return False, "Invalid Officer ID or password."
-    token = record_login_session(admin["id"], "administrator")
+    
+    # Retrieve password hash safely regardless of column naming
+    pwd_hash = admin.get("password_hash") or admin.get("password")
+    if not pwd_hash or not _verify_password(password, pwd_hash):
+        return False, "Invalid Officer ID or password."
+
+    admin_pk = admin.get("id") or 1
+    token = record_login_session(admin_pk, "administrator")
     st.session_state.auth = {
         "role": "administrator",
-        "id": admin["id"],
-        "identifier": admin["officer_id"],
-        "name": admin["name"],
+        "id": admin_pk,
+        "identifier": officer_id,
+        "name": admin.get("name") or admin.get("full_name") or "HQ Welfare Officer",
         "token": token,
     }
-    insert_audit_log(admin["officer_id"], "Logged in")
+    insert_audit_log(officer_id, "Logged in")
     return True, "Login successful."
-
 
 def logout():
     auth_state = st.session_state.get("auth")
