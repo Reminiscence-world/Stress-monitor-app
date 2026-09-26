@@ -8,11 +8,81 @@ Connects to: personnel_welfare.db (same SQLite file used by your other modules)
 import sqlite3
 import secrets
 import re
-
 import bcrypt
 import streamlit as st
 
-DB_PATH = "personnel_welfare.db"  # same file init_db.py / other modules already use
+DB_PATH = "personnel_welfare.db"
+
+# --- DB Auto-Initialization --------------------------------------------------
+def ensure_auth_db_initialized():
+    """Ensure all auth tables and default admin exist in the shared database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # 1. Users table (Personnel)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            personnel_id TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            department TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 2. Administrators table (Welfare Officers)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS administrators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'welfare_officer',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 3. Sessions table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role TEXT NOT NULL,
+            token TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            login_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            logout_time DATETIME
+        )
+    """)
+
+    # 4. Audit logs table (compatible with both app.py and auth.py)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            officer_action TEXT,
+            target_personnel_id TEXT
+        )
+    """)
+
+    # Seed a default administrator if none exist
+    cursor.execute("SELECT COUNT(*) FROM administrators")
+    if cursor.fetchone()[0] == 0:
+        # Default Officer: ID = COMMAND-99 | Password = AdminPass@123
+        hashed_admin_pwd = bcrypt.hashpw("AdminPass@123".encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+        cursor.execute("""
+            INSERT OR IGNORE INTO administrators (officer_id, name, email, password_hash, role)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("COMMAND-99", "HQ Welfare Officer", "welfare.hq@defence.mil", hashed_admin_pwd, "welfare_officer"))
+
+    conn.commit()
+    conn.close()
+
+# Run immediately when auth.py is imported
+ensure_auth_db_initialized()
 
 
 # --- DB connection -----------------------------------------------------------
@@ -70,6 +140,12 @@ def create_user(full_name, personnel_id, email, department, password_hash):
            VALUES (?, ?, ?, ?, ?)""",
         (full_name, personnel_id, email, department, password_hash),
     )
+    # Also sync into personnel_records so the risk model can evaluate them
+    conn.execute(
+        """INSERT OR IGNORE INTO personnel_records (personnel_id, continuous_duty_days, leave_due_days, overtime_hours_30d, posting_type)
+           VALUES (?, 0, 0, 0.0, ?)""",
+        (personnel_id, department),
+    )
     conn.commit()
     conn.close()
 
@@ -124,7 +200,10 @@ def close_login_session(principal_id, role):
 
 def insert_audit_log(officer_id, action):
     conn = get_connection()
-    conn.execute("INSERT INTO audit_logs (officer_id, action) VALUES (?, ?)", (officer_id, action))
+    conn.execute(
+        "INSERT INTO audit_logs (officer_action, target_personnel_id) VALUES (?, ?)", 
+        (action, officer_id)
+    )
     conn.commit()
     conn.close()
 
@@ -199,7 +278,7 @@ def current_role():
 
 
 def require_role(role_name):
-    """Call as the FIRST line inside app_personnel_checkin.run() / app_officer_dashboard.run().
+    """Call as the FIRST line inside view runners.
     Halts the script if the session isn't authenticated with the right role."""
     if not is_authenticated():
         st.warning("Please log in to continue.")
@@ -214,8 +293,8 @@ def _apply_theme():
     st.markdown(
         """
         <style>
-        .stApp { background: linear-gradient(135deg, #DBE8F4, #4F9CF9 140%); }
-        div.stButton > button { border-radius: 10px; font-weight: 600; }
+        .stApp { background: linear-gradient(135deg, #1e2530, #11141a); }
+        div.stButton > button { border-radius: 8px; font-weight: 600; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -225,17 +304,17 @@ def _apply_theme():
 def render_role_selection():
     _apply_theme()
     st.markdown("<h1 style='text-align:center;'>Personnel Welfare Monitoring System</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Select how you would like to continue</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center;'>Select operational role to continue</p>", unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### 👤 User")
-        st.caption("Personnel Self Check-In Portal")
-        if st.button("Continue as User", use_container_width=True):
+        st.markdown("### 👤 Personnel")
+        st.caption("Confidential Wellness Self Check-In")
+        if st.button("Continue as Personnel", use_container_width=True):
             st.session_state.auth_view = "user_login"
             st.rerun()
     with col2:
         st.markdown("### 🛡️ Administrator")
-        st.caption("Welfare Officer Dashboard")
+        st.caption("Welfare Officer Supervisory Dashboard")
         if st.button("Continue as Administrator", use_container_width=True):
             st.session_state.auth_view = "admin_login"
             st.rerun()
@@ -245,7 +324,7 @@ def render_user_login():
     _apply_theme()
     st.markdown("### 👤 Personnel Login")
     with st.form("user_login_form"):
-        personnel_id = st.text_input("Personnel ID")
+        personnel_id = st.text_input("Personnel ID (e.g., CRP-1001)")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login", use_container_width=True)
     if submitted:
@@ -264,10 +343,10 @@ def render_user_login():
 
 def render_user_signup():
     _apply_theme()
-    st.markdown("### 👤 Create Account")
+    st.markdown("### 👤 Create Personnel Account")
     with st.form("user_signup_form"):
         full_name = st.text_input("Full Name")
-        personnel_id = st.text_input("Personnel ID")
+        personnel_id = st.text_input("Personnel ID (e.g., CRP-1018)")
         email = st.text_input("Email")
         department = st.text_input("Unit / Department")
         password = st.text_input("Password", type="password")
@@ -291,7 +370,7 @@ def render_admin_login():
     _apply_theme()
     st.markdown("### 🛡️ Administrator Login")
     with st.form("admin_login_form"):
-        officer_id = st.text_input("Officer ID")
+        officer_id = st.text_input("Officer ID (Default: COMMAND-99)")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login", use_container_width=True)
     if submitted:
