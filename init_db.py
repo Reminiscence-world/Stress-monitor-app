@@ -37,6 +37,56 @@ def init_database():
     );
     """)
 
+    # --- NEW: Authentication tables (appended for auth.py) ---------------------
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        full_name TEXT NOT NULL,
+        personnel_id TEXT NOT NULL UNIQUE,
+        email TEXT NOT NULL UNIQUE,
+        department TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        is_active_account INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS administrators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        officer_id TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'welfare_officer',
+        is_active_account INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        logout_time TIMESTAMP,
+        token TEXT NOT NULL UNIQUE,
+        is_active INTEGER NOT NULL DEFAULT 1
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        officer_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    # --- END NEW ------------------------------------------------------------
+
+    
     conn.commit()
     print("Database tables initialized successfully.")
     return conn
