@@ -41,9 +41,7 @@ def get_ist_now():
 
 def get_ist_date():
 
-    return get_ist_now().strftime(
-        "%Y-%m-%d"
-    )
+    return get_ist_now().strftime("%Y-%m-%d")
 
 
 # =========================================================
@@ -168,9 +166,6 @@ def ensure_db_initialized():
 
     # -----------------------------------------------------
     # Database migration
-    #
-    # If an older version of the database already exists,
-    # add the newer columns without deleting old data.
     # -----------------------------------------------------
 
     cursor.execute(
@@ -226,7 +221,7 @@ def ensure_db_initialized():
                 pass
 
     # -----------------------------------------------------
-    # Migrate old column names if they exist
+    # Migrate old column names
     # -----------------------------------------------------
 
     if (
@@ -574,9 +569,7 @@ def fetch_dashboard_data():
 # NOTIFICATION CREATION
 # =========================================================
 
-def create_high_risk_notification(
-    person
-):
+def create_high_risk_notification(person):
 
     try:
 
@@ -593,7 +586,12 @@ def create_high_risk_notification(
             person["risk_score"]
         )
 
+        # -------------------------------------------------
+        # ONLY CREATE ALERT IF RISK >= 0.75
+        # -------------------------------------------------
+
         if risk_score < NOTIFICATION_THRESHOLD:
+
             return False
 
         conn = sqlite3.connect(DB_NAME)
@@ -601,8 +599,8 @@ def create_high_risk_notification(
         cursor = conn.cursor()
 
         # -------------------------------------------------
-        # If notification already exists for this exact
-        # assessment, do not create another one.
+        # Prevent duplicate notification for same
+        # assessment
         # -------------------------------------------------
 
         if assessment_id is not None:
@@ -626,7 +624,7 @@ def create_high_risk_notification(
                 return False
 
         # -------------------------------------------------
-        # Convert lists to readable text
+        # Convert signals/actions into readable text
         # -------------------------------------------------
 
         signals = person.get(
@@ -639,15 +637,40 @@ def create_high_risk_notification(
             []
         )
 
-        signals_text = "\n".join(
-            f"• {x}"
-            for x in signals
+        if isinstance(signals, (list, tuple)):
+
+            signals_text = "\n".join(
+                f"• {x}"
+                for x in signals
+            )
+
+        else:
+
+            signals_text = str(signals)
+
+        if isinstance(actions, (list, tuple)):
+
+            actions_text = "\n".join(
+                f"• {x}"
+                for x in actions
+            )
+
+        else:
+
+            actions_text = str(actions)
+
+        # -------------------------------------------------
+        # Self assessment value
+        # -------------------------------------------------
+
+        self_score = person.get(
+            "self_assessment_score",
+            15
         )
 
-        actions_text = "\n".join(
-            f"• {x}"
-            for x in actions
-        )
+        if pd.isna(self_score):
+
+            self_score = 15
 
         # -------------------------------------------------
         # Insert notification
@@ -720,12 +743,7 @@ def create_high_risk_notification(
                 )
             ),
 
-            float(
-                person.get(
-                    "self_assessment_score",
-                    15
-                )
-            ),
+            float(self_score),
 
             signals_text,
 
@@ -758,6 +776,7 @@ def create_high_risk_notification(
 def generate_high_risk_notifications(df):
 
     if df is None or df.empty:
+
         return
 
     for _, person in df.iterrows():
@@ -810,8 +829,7 @@ def get_notifications():
 
         WHERE is_cleared = 0
 
-        ORDER BY
-            notification_id DESC
+        ORDER BY notification_id DESC
     """)
 
     rows = cursor.fetchall()
@@ -1007,20 +1025,26 @@ if app_mode == "Welfare Officer Dashboard":
 
         st.stop()
 
+
     # -----------------------------------------------------
-    # Create notifications for any existing high-risk
-    # assessments.
+    # Create notifications for existing high-risk cases
     # -----------------------------------------------------
 
     generate_high_risk_notifications(df)
 
-    # -----------------------------------------------------
-    # HEADER + NOTIFICATION BELL
-    # -----------------------------------------------------
+
+    # =====================================================
+    # HEADER + NOTIFICATION BAR
+    # =====================================================
 
     header_col, notification_col = st.columns(
         [8, 2]
     )
+
+
+    # -----------------------------------------------------
+    # LEFT SIDE HEADER
+    # -----------------------------------------------------
 
     with header_col:
 
@@ -1033,237 +1057,624 @@ if app_mode == "Welfare Officer Dashboard":
             "Administrative & Peer-Care Focus Only"
         )
 
+
     # -----------------------------------------------------
-    # Notification center
-    #
-    # st.fragment allows this section to refresh every
-    # 3 seconds without requiring the entire dashboard
-    # to be manually refreshed.
+    # RIGHT SIDE NOTIFICATION BUTTON
     # -----------------------------------------------------
 
-    @st.fragment(run_every="3s")
-    def notification_center():
+    with notification_col:
+
+        st.markdown(
+            """
+            <div style="
+                text-align:right;
+                font-size:12px;
+                font-weight:700;
+                color:#777;
+                margin-top:8px;
+                margin-bottom:5px;
+            ">
+                WELFARE CENTER
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         unread_count = (
             get_unread_notification_count()
         )
 
-        with notification_col:
+        if unread_count > 0:
 
-            if unread_count > 0:
+            notification_label = (
+                f"🔔 Notifications • "
+                f"{unread_count} NEW"
+            )
 
-                button_label = (
-                    f"🔔 Notifications "
-                    f"({unread_count})"
-                )
+        else:
 
-            else:
+            notification_label = (
+                "🔔 Notifications"
+            )
 
-                button_label = (
-                    "🔔 Notifications"
-                )
 
-            if st.button(
-                button_label,
-                key="notification_button",
-                use_container_width=True
-            ):
+        if st.button(
+            notification_label,
+            key="open_notifications",
+            use_container_width=True
+        ):
 
-                st.session_state.show_notifications = (
-                    not st.session_state.show_notifications
-                )
+            st.session_state.show_notifications = (
+                not st.session_state.show_notifications
+            )
 
-                st.rerun()
+            st.rerun()
+
+
+    # =====================================================
+    # NOTIFICATION PANEL
+    # =====================================================
+
+    if st.session_state.show_notifications:
+
+        st.markdown("---")
 
         # -------------------------------------------------
-        # Notification panel
+        # Panel header
         # -------------------------------------------------
 
-        if st.session_state.show_notifications:
+        panel_col1, panel_col2 = st.columns(
+            [7, 3]
+        )
+
+        with panel_col1:
+
+            st.markdown(
+                """
+                <div style="
+                    background:#0B2545;
+                    color:white;
+                    padding:16px 20px;
+                    border-radius:10px;
+                    margin-bottom:10px;
+                ">
+
+                    <div style="
+                        font-size:22px;
+                        font-weight:700;
+                    ">
+                        🔔 Welfare Notifications
+                    </div>
+
+                    <div style="
+                        font-size:13px;
+                        margin-top:4px;
+                        opacity:0.85;
+                    ">
+                        Personnel requiring welfare attention
+                    </div>
+
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+
+        with panel_col2:
 
             notifications = get_notifications()
 
-            st.markdown("---")
+            if not notifications.empty:
 
-            notification_header_col, action_col = (
-                st.columns([7, 3])
-            )
-
-            with notification_header_col:
-
-                st.subheader(
-                    "🔔 Welfare Notifications"
-                )
-
-            with action_col:
-
-                if not notifications.empty:
-
-                    if st.button(
-                        "Mark All as Read",
-                        key="mark_all_read"
-                    ):
-
-                        mark_all_notifications_read()
-
-                        st.rerun()
-
-            if notifications.empty:
-
-                st.info(
-                    "No active welfare notifications."
-                )
-
-            else:
-
-                for _, notification in (
-                    notifications.iterrows()
+                if st.button(
+                    "✓ Mark All as Read",
+                    key="mark_all_notifications",
+                    use_container_width=True
                 ):
 
-                    risk = float(
-                        notification["risk_score"]
-                    )
+                    mark_all_notifications_read()
 
-                    unread = (
-                        int(
-                            notification["is_read"]
-                        ) == 0
-                    )
+                    st.rerun()
 
-                    # -------------------------------------
-                    # Notification card
-                    # -------------------------------------
 
-                    if unread:
+        # -------------------------------------------------
+        # No notifications
+        # -------------------------------------------------
 
-                        st.markdown(
-                            "### 🔴 New Welfare Alert"
-                        )
+        if notifications.empty:
 
-                    else:
+            st.success(
+                "✓ No active high-risk welfare notifications."
+            )
 
-                        st.markdown(
-                            "### 🟠 Welfare Alert"
-                        )
+
+        # -------------------------------------------------
+        # Notifications available
+        # -------------------------------------------------
+
+        else:
+
+            st.caption(
+                f"{len(notifications)} active "
+                f"welfare notification(s)"
+            )
+
+            # ---------------------------------------------
+            # EACH NOTIFICATION
+            # ---------------------------------------------
+
+            for _, notification in (
+                notifications.iterrows()
+            ):
+
+                risk = float(
+                    notification["risk_score"]
+                )
+
+                unread = (
+                    int(
+                        notification["is_read"]
+                    ) == 0
+                )
+
+                # -----------------------------------------
+                # Alert heading
+                # -----------------------------------------
+
+                if unread:
 
                     st.markdown(
-                        f"""
+                        """
                         <div style="
-                            border:1px solid #d9dee8;
-                            border-radius:12px;
-                            padding:18px;
-                            margin-bottom:12px;
-                            background:#f8fbff;
+                            color:#B42318;
+                            font-weight:700;
+                            font-size:15px;
+                            margin-top:15px;
+                            margin-bottom:8px;
                         ">
-
-                        <div style="
-                            display:flex;
-                            justify-content:space-between;
-                            align-items:center;
-                        ">
-
-                            <div>
-                                <h3 style="margin:0;">
-                                    Personnel
-                                    {notification['personnel_id']}
-                                </h3>
-
-                                <p style="
-                                    margin:4px 0 0 0;
-                                    color:#666;
-                                ">
-                                    {notification['posting_type']}
-                                </p>
-                            </div>
-
-                            <div style="
-                                font-size:28px;
-                                font-weight:700;
-                            ">
-                                {risk:.2f}
-                            </div>
-
-                        </div>
-
-                        <hr>
-
-                        <b>Risk Tier:</b>
-                        {notification['risk_tier']}
-                        <br>
-
-                        <b>Continuous Duty:</b>
-                        {int(notification['continuous_duty_days'])} days
-                        <br>
-
-                        <b>Leave Due:</b>
-                        {int(notification['leave_days_due'])} days
-                        <br>
-
-                        <b>Overtime:</b>
-                        {float(notification['overtime_hours_30d']):.1f}
-                        hrs / 30 days
-                        <br>
-
-                        <b>Self-Assessment:</b>
-                        {float(notification['self_assessment_score']):.0f}/25
-
-                        <br><br>
-
-                        <b>Key Signals</b>
-                        <br>
-                        {str(notification['key_signals']).replace(chr(10), '<br>')}
-
-                        <br><br>
-
-                        <b>Suggested Welfare Action</b>
-                        <br>
-                        {str(notification['suggested_actions']).replace(chr(10), '<br>')}
-
-                        <br><br>
-
-                        <b>Guidance:</b>
-                        {notification['talking_point']}
-
+                            🔴 NEW WELFARE ALERT
                         </div>
                         """,
                         unsafe_allow_html=True
                     )
 
-                    button_col1, button_col2 = (
-                        st.columns(2)
+                else:
+
+                    st.markdown(
+                        """
+                        <div style="
+                            color:#C08A3E;
+                            font-weight:700;
+                            font-size:15px;
+                            margin-top:15px;
+                            margin-bottom:8px;
+                        ">
+                            🟠 WELFARE ALERT
+                        </div>
+                        """,
+                        unsafe_allow_html=True
                     )
 
-                    with button_col1:
 
-                        if unread:
+                # -----------------------------------------
+                # Safe values
+                # -----------------------------------------
 
-                            if st.button(
-                                "✓ Mark as Read",
-                                key=(
-                                    f"read_"
-                                    f"{notification['notification_id']}"
-                                )
-                            ):
+                personnel_id = str(
+                    notification["personnel_id"]
+                )
 
-                                mark_notification_read(
-                                    notification[
-                                        "notification_id"
-                                    ]
-                                )
+                posting_type = str(
+                    notification["posting_type"]
+                )
 
-                                st.rerun()
+                risk_tier = str(
+                    notification["risk_tier"]
+                )
 
-                    with button_col2:
+                continuous_duty = int(
+                    notification[
+                        "continuous_duty_days"
+                    ]
+                )
+
+                leave_due = int(
+                    notification[
+                        "leave_days_due"
+                    ]
+                )
+
+                overtime = float(
+                    notification[
+                        "overtime_hours_30d"
+                    ]
+                )
+
+
+                self_score = notification[
+                    "self_assessment_score"
+                ]
+
+                if pd.isna(self_score):
+
+                    self_score_text = (
+                        "Not submitted"
+                    )
+
+                else:
+
+                    self_score_text = (
+                        f"{float(self_score):.0f}/25"
+                    )
+
+
+                key_signals = str(
+                    notification["key_signals"]
+                )
+
+                key_signals_html = (
+                    key_signals
+                    .replace("\n", "<br>")
+                )
+
+
+                suggested_actions = str(
+                    notification[
+                        "suggested_actions"
+                    ]
+                )
+
+                suggested_actions_html = (
+                    suggested_actions
+                    .replace("\n", "<br>")
+                )
+
+
+                talking_point = str(
+                    notification[
+                        "talking_point"
+                    ]
+                )
+
+
+                # -----------------------------------------
+                # Notification Card
+                # -----------------------------------------
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        border:1px solid #D9DEE8;
+                        border-left:6px solid #C08A3E;
+                        border-radius:12px;
+                        padding:20px;
+                        margin-bottom:8px;
+                        background:#F8FBFF;
+                        box-shadow:
+                            0 2px 8px
+                            rgba(0,0,0,0.04);
+                    ">
+
+                        <!-- HEADER -->
+
+                        <div style="
+                            display:flex;
+                            justify-content:
+                                space-between;
+                            align-items:center;
+                        ">
+
+                            <div>
+
+                                <div style="
+                                    font-size:22px;
+                                    font-weight:700;
+                                    color:#0B2545;
+                                ">
+                                    Personnel
+                                    {personnel_id}
+                                </div>
+
+                                <div style="
+                                    font-size:14px;
+                                    color:#666;
+                                    margin-top:4px;
+                                ">
+                                    Posting:
+                                    {posting_type}
+                                </div>
+
+                            </div>
+
+
+                            <div style="
+                                text-align:center;
+                                min-width:90px;
+                            ">
+
+                                <div style="
+                                    font-size:30px;
+                                    font-weight:800;
+                                    color:#C08A3E;
+                                ">
+                                    {risk:.2f}
+                                </div>
+
+                                <div style="
+                                    font-size:11px;
+                                    color:#777;
+                                    font-weight:600;
+                                ">
+                                    MODEL RISK
+                                </div>
+
+                            </div>
+
+                        </div>
+
+
+                        <hr style="
+                            border:none;
+                            border-top:
+                                1px solid #D9DEE8;
+                            margin:15px 0;
+                        ">
+
+
+                        <!-- RISK TIER -->
+
+                        <div style="
+                            font-size:14px;
+                            margin-bottom:12px;
+                        ">
+
+                            <b>Risk Tier:</b>
+                            {risk_tier}
+
+                        </div>
+
+
+                        <!-- OPERATIONAL FACTORS -->
+
+                        <div style="
+                            display:grid;
+                            grid-template-columns:
+                                repeat(4, 1fr);
+                            gap:10px;
+                        ">
+
+
+                            <div style="
+                                background:white;
+                                padding:12px;
+                                border-radius:8px;
+                                border:
+                                    1px solid #E1E5EC;
+                            ">
+
+                                <div style="
+                                    font-size:10px;
+                                    color:#777;
+                                    font-weight:600;
+                                ">
+                                    CONTINUOUS DUTY
+                                </div>
+
+                                <div style="
+                                    font-size:20px;
+                                    font-weight:700;
+                                    color:#0B2545;
+                                ">
+                                    {continuous_duty}
+                                </div>
+
+                                <div style="
+                                    font-size:11px;
+                                    color:#777;
+                                ">
+                                    days
+                                </div>
+
+                            </div>
+
+
+                            <div style="
+                                background:white;
+                                padding:12px;
+                                border-radius:8px;
+                                border:
+                                    1px solid #E1E5EC;
+                            ">
+
+                                <div style="
+                                    font-size:10px;
+                                    color:#777;
+                                    font-weight:600;
+                                ">
+                                    LEAVE DUE
+                                </div>
+
+                                <div style="
+                                    font-size:20px;
+                                    font-weight:700;
+                                    color:#0B2545;
+                                ">
+                                    {leave_due}
+                                </div>
+
+                                <div style="
+                                    font-size:11px;
+                                    color:#777;
+                                ">
+                                    days
+                                </div>
+
+                            </div>
+
+
+                            <div style="
+                                background:white;
+                                padding:12px;
+                                border-radius:8px;
+                                border:
+                                    1px solid #E1E5EC;
+                            ">
+
+                                <div style="
+                                    font-size:10px;
+                                    color:#777;
+                                    font-weight:600;
+                                ">
+                                    OVERTIME
+                                </div>
+
+                                <div style="
+                                    font-size:20px;
+                                    font-weight:700;
+                                    color:#0B2545;
+                                ">
+                                    {overtime:.1f}
+                                </div>
+
+                                <div style="
+                                    font-size:11px;
+                                    color:#777;
+                                ">
+                                    hrs / 30 days
+                                </div>
+
+                            </div>
+
+
+                            <div style="
+                                background:white;
+                                padding:12px;
+                                border-radius:8px;
+                                border:
+                                    1px solid #E1E5EC;
+                            ">
+
+                                <div style="
+                                    font-size:10px;
+                                    color:#777;
+                                    font-weight:600;
+                                ">
+                                    SELF-ASSESSMENT
+                                </div>
+
+                                <div style="
+                                    font-size:20px;
+                                    font-weight:700;
+                                    color:#0B2545;
+                                ">
+                                    {self_score_text}
+                                </div>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- KEY SIGNALS -->
+
+                        <div style="
+                            margin-top:20px;
+                        ">
+
+                            <div style="
+                                font-size:14px;
+                                font-weight:700;
+                                color:#0B2545;
+                                margin-bottom:7px;
+                            ">
+                                Key Signals
+                            </div>
+
+                            <div style="
+                                font-size:14px;
+                                line-height:1.6;
+                                color:#444;
+                            ">
+                                {key_signals_html}
+                            </div>
+
+                        </div>
+
+
+                        <!-- SUGGESTED ACTION -->
+
+                        <div style="
+                            margin-top:18px;
+                            padding:14px;
+                            background:#FFF9EF;
+                            border-radius:8px;
+                            border:
+                                1px solid #F0DFC0;
+                        ">
+
+                            <div style="
+                                font-size:14px;
+                                font-weight:700;
+                                color:#0B2545;
+                                margin-bottom:7px;
+                            ">
+                                Suggested Welfare Action
+                            </div>
+
+                            <div style="
+                                font-size:14px;
+                                line-height:1.6;
+                                color:#444;
+                            ">
+                                {suggested_actions_html}
+                            </div>
+
+                        </div>
+
+
+                        <!-- GUIDANCE -->
+
+                        <div style="
+                            margin-top:15px;
+                            font-size:14px;
+                            line-height:1.5;
+                            color:#444;
+                        ">
+
+                            <b>Guidance:</b>
+                            {talking_point}
+
+                        </div>
+
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+
+                # -----------------------------------------
+                # Action buttons
+                # -----------------------------------------
+
+                button_col1, button_col2, button_col3 = (
+                    st.columns([1.2, 1.2, 5.6])
+                )
+
+
+                with button_col1:
+
+                    if unread:
 
                         if st.button(
-                            "Clear Alert",
+                            "✓ Mark as Read",
                             key=(
-                                f"clear_"
+                                f"read_"
                                 f"{notification['notification_id']}"
-                            )
+                            ),
+                            use_container_width=True
                         ):
 
-                            clear_notification(
+                            mark_notification_read(
                                 notification[
                                     "notification_id"
                                 ]
@@ -1271,14 +1682,33 @@ if app_mode == "Welfare Officer Dashboard":
 
                             st.rerun()
 
-                    st.markdown("---")
+
+                with button_col2:
+
+                    if st.button(
+                        "Clear Alert",
+                        key=(
+                            f"clear_"
+                            f"{notification['notification_id']}"
+                        ),
+                        use_container_width=True
+                    ):
+
+                        clear_notification(
+                            notification[
+                                "notification_id"
+                            ]
+                        )
+
+                        st.rerun()
 
 
-    notification_center()
+                st.markdown("---")
 
-    # -----------------------------------------------------
-    # Ethical notice
-    # -----------------------------------------------------
+
+    # =====================================================
+    # ETHICAL NOTICE
+    # =====================================================
 
     st.warning(
         "**ETHICAL COMPLIANCE & USAGE NOTICE:**\n\n"
@@ -1293,16 +1723,20 @@ if app_mode == "Welfare Officer Dashboard":
         "for appropriate welfare support."
     )
 
+
     st.markdown("---")
 
-    # -----------------------------------------------------
-    # Summary metrics
-    # -----------------------------------------------------
+
+    # =====================================================
+    # SUMMARY METRICS
+    # =====================================================
 
     if not df.empty:
 
         high_count = len(
-            df[df["risk_score"] >= 0.70]
+            df[
+                df["risk_score"] >= 0.70
+            ]
         )
 
         critical_count = len(
@@ -1318,9 +1752,11 @@ if app_mode == "Welfare Officer Dashboard":
 
         total_personnel = len(df)
 
+
         metric1, metric2, metric3, metric4 = (
             st.columns(4)
         )
+
 
         with metric1:
 
@@ -1329,12 +1765,14 @@ if app_mode == "Welfare Officer Dashboard":
                 total_personnel
             )
 
+
         with metric2:
 
             st.metric(
                 "High Risk",
                 high_count
             )
+
 
         with metric3:
 
@@ -1343,6 +1781,7 @@ if app_mode == "Welfare Officer Dashboard":
                 critical_count
             )
 
+
         with metric4:
 
             st.metric(
@@ -1350,11 +1789,13 @@ if app_mode == "Welfare Officer Dashboard":
                 f"{average_risk:.2f}"
             )
 
+
     st.markdown("---")
 
-    # -----------------------------------------------------
-    # Priority welfare cases
-    # -----------------------------------------------------
+
+    # =====================================================
+    # PRIORITY WELFARE CASES
+    # =====================================================
 
     st.subheader(
         "Priority Welfare Cases"
@@ -1364,6 +1805,7 @@ if app_mode == "Welfare Officer Dashboard":
         df["risk_score"]
         >= NOTIFICATION_THRESHOLD
     ].copy()
+
 
     if critical_cases.empty:
 
@@ -1390,29 +1832,46 @@ if app_mode == "Welfare Officer Dashboard":
                 display_columns
             ].rename(
                 columns={
-                    "personnel_id": "Personnel ID",
-                    "risk_score": "Risk Score",
-                    "risk_tier": "Risk Tier",
-                    "posting": "Posting",
-                    "continuous_duty_days": "Continuous Duty",
-                    "leave_days_due": "Leave Due",
-                    "overtime_hours_last_30d": "Overtime / 30d",
-                    "self_assessment_score": "Self Check-in"
+                    "personnel_id":
+                        "Personnel ID",
+
+                    "risk_score":
+                        "Risk Score",
+
+                    "risk_tier":
+                        "Risk Tier",
+
+                    "posting":
+                        "Posting",
+
+                    "continuous_duty_days":
+                        "Continuous Duty",
+
+                    "leave_days_due":
+                        "Leave Due",
+
+                    "overtime_hours_last_30d":
+                        "Overtime / 30d",
+
+                    "self_assessment_score":
+                        "Self Check-in"
                 }
             ),
             use_container_width=True,
             hide_index=True
         )
 
-    # -----------------------------------------------------
-    # Full personnel table
-    # -----------------------------------------------------
+
+    # =====================================================
+    # FULL PERSONNEL TABLE
+    # =====================================================
 
     st.markdown("---")
 
     st.subheader(
         "All Personnel"
     )
+
 
     if not df.empty:
 
@@ -1432,29 +1891,46 @@ if app_mode == "Welfare Officer Dashboard":
                 table_columns
             ].rename(
                 columns={
-                    "personnel_id": "Personnel ID",
-                    "risk_score": "Risk Score",
-                    "risk_tier": "Risk Tier",
-                    "posting": "Posting",
-                    "continuous_duty_days": "Continuous Duty",
-                    "leave_days_due": "Leave Due",
-                    "overtime_hours_last_30d": "Overtime / 30d",
-                    "self_assessment_score": "Self Check-in"
+                    "personnel_id":
+                        "Personnel ID",
+
+                    "risk_score":
+                        "Risk Score",
+
+                    "risk_tier":
+                        "Risk Tier",
+
+                    "posting":
+                        "Posting",
+
+                    "continuous_duty_days":
+                        "Continuous Duty",
+
+                    "leave_days_due":
+                        "Leave Due",
+
+                    "overtime_hours_last_30d":
+                        "Overtime / 30d",
+
+                    "self_assessment_score":
+                        "Self Check-in"
                 }
             ),
             use_container_width=True,
             hide_index=True
         )
 
-    # -----------------------------------------------------
-    # Detailed case
-    # -----------------------------------------------------
+
+    # =====================================================
+    # PERSONNEL CASE EXPLORER
+    # =====================================================
 
     st.markdown("---")
 
     st.subheader(
         "Personnel Case Explorer"
     )
+
 
     if not df.empty:
 
@@ -1463,16 +1939,20 @@ if app_mode == "Welfare Officer Dashboard":
             df["personnel_id"].tolist()
         )
 
+
         selected_rows = df[
             df["personnel_id"]
             == selected_id
         ]
 
+
         if not selected_rows.empty:
 
             person = selected_rows.iloc[0]
 
+
             col1, col2, col3 = st.columns(3)
+
 
             with col1:
 
@@ -1481,12 +1961,14 @@ if app_mode == "Welfare Officer Dashboard":
                     f"{float(person['risk_score']):.2f}"
                 )
 
+
             with col2:
 
                 st.metric(
                     "Risk Tier",
                     person["risk_tier"]
                 )
+
 
             with col3:
 
@@ -1495,7 +1977,11 @@ if app_mode == "Welfare Officer Dashboard":
                     f"{float(person['self_assessment_score']):.0f}/25"
                 )
 
-            st.markdown("### Key Signals")
+
+            st.markdown(
+                "### Key Signals"
+            )
+
 
             for signal in person[
                 "key_signals"
@@ -1505,9 +1991,11 @@ if app_mode == "Welfare Officer Dashboard":
                     f"• {signal}"
                 )
 
+
             st.markdown(
                 "### Suggested Welfare Actions"
             )
+
 
             for action in person[
                 "suggested_actions"
@@ -1517,27 +2005,33 @@ if app_mode == "Welfare Officer Dashboard":
                     f"• {action}"
                 )
 
+
             st.info(
                 person["talking_point"]
             )
 
-    # -----------------------------------------------------
-    # Overdue check-ins
-    # -----------------------------------------------------
+
+    # =====================================================
+    # OVERDUE CHECK-INS
+    # =====================================================
 
     st.markdown("---")
 
     current_time = get_ist_now()
 
+
     overdue_records = (
         get_overdue_personnel()
-        if current_time.time() >= CHECKIN_DEADLINE
+        if current_time.time()
+        >= CHECKIN_DEADLINE
         else []
     )
+
 
     st.subheader(
         "Overdue Check-ins"
     )
+
 
     if overdue_records:
 
@@ -1561,17 +2055,20 @@ if app_mode == "Welfare Officer Dashboard":
             "No overdue check-ins currently detected."
         )
 
-    # -----------------------------------------------------
-    # CSV export
-    # -----------------------------------------------------
+
+    # =====================================================
+    # CSV EXPORT
+    # =====================================================
 
     st.markdown("---")
+
 
     if not df.empty:
 
         csv_data = df.to_csv(
             index=False
         ).encode("utf-8")
+
 
         st.download_button(
             "⬇️ Export Welfare Risk Data",
@@ -1595,6 +2092,7 @@ else:
         "Voluntary • Confidential • Non-Clinical"
     )
 
+
     st.markdown(
         """
         <div style="
@@ -1615,11 +2113,13 @@ else:
         unsafe_allow_html=True
     )
 
+
     st.markdown("---")
 
-    # -----------------------------------------------------
-    # Already submitted
-    # -----------------------------------------------------
+
+    # =====================================================
+    # ALREADY SUBMITTED
+    # =====================================================
 
     if st.session_state.submitted:
 
@@ -1631,6 +2131,7 @@ else:
             "Only one check-in is permitted per day."
         )
 
+
         if st.button(
             "Submit Another Check-in"
         ):
@@ -1641,22 +2142,26 @@ else:
 
             st.rerun()
 
+
     else:
 
-        # -------------------------------------------------
-        # Identity
-        # -------------------------------------------------
+        # =================================================
+        # IDENTITY
+        # =================================================
 
         st.subheader(
             "1. Identity & Verification"
         )
 
+
         valid_ids = get_valid_personnel_ids()
+
 
         personnel_id = st.selectbox(
             "Select Your Service ID",
             options=[""] + valid_ids
         )
+
 
         if personnel_id:
 
@@ -1666,12 +2171,15 @@ else:
                     [2, 1]
                 )
 
+
                 with col1:
 
                     st.caption(
                         f"Hardware Token / Scanner "
-                        f"awaiting input for `{personnel_id}`..."
+                        f"awaiting input for "
+                        f"`{personnel_id}`..."
                     )
+
 
                 with col2:
 
@@ -1683,11 +2191,14 @@ else:
 
                         st.rerun()
 
+
             else:
 
                 st.success(
-                    f"✓ Identity verified for `{personnel_id}`"
+                    f"✓ Identity verified for "
+                    f"`{personnel_id}`"
                 )
+
 
                 if st.button(
                     "Reset Authentication"
@@ -1697,15 +2208,18 @@ else:
 
                     st.rerun()
 
+
         st.markdown("---")
 
-        # -------------------------------------------------
-        # Assessment
-        # -------------------------------------------------
+
+        # =================================================
+        # ASSESSMENT
+        # =================================================
 
         st.subheader(
             "2. Daily Well-Being Assessment"
         )
+
 
         if not st.session_state.biometric_authenticated:
 
@@ -1713,6 +2227,7 @@ else:
                 "Please select your Service ID and "
                 "complete verification above."
             )
+
 
         else:
 
@@ -1727,12 +2242,14 @@ else:
                     3
                 )
 
+
                 q2 = st.slider(
                     "2. My current daily workload feels manageable.",
                     1,
                     5,
                     3
                 )
+
 
                 q3 = st.slider(
                     "3. I have maintained steady physical and mental energy levels today.",
@@ -1741,12 +2258,14 @@ else:
                     3
                 )
 
+
                 q4 = st.slider(
                     "4. I feel supported by my peer group and team.",
                     1,
                     5,
                     3
                 )
+
 
                 q5 = st.slider(
                     "5. My overall morale and motivation remain steady.",
@@ -1755,19 +2274,23 @@ else:
                     3
                 )
 
+
                 st.markdown("---")
+
 
                 consent_given = st.checkbox(
                     "I voluntarily choose to share this wellness self-check-in."
                 )
 
+
                 submit_btn = st.form_submit_button(
                     "Submit Check-in"
                 )
 
-            # -------------------------------------------------
+
+            # =================================================
             # SUBMIT
-            # -------------------------------------------------
+            # =================================================
 
             if submit_btn:
 
@@ -1775,11 +2298,13 @@ else:
                     personnel_id.strip()
                 )
 
+
                 if not clean_id:
 
                     st.error(
                         "Please select a valid Service ID."
                     )
+
 
                 elif not consent_given:
 
@@ -1787,11 +2312,13 @@ else:
                         "Please confirm voluntary consent."
                     )
 
+
                 else:
 
                     total_score = (
                         q1 + q2 + q3 + q4 + q5
                     )
+
 
                     try:
 
@@ -1800,6 +2327,7 @@ else:
                         )
 
                         cursor = conn.cursor()
+
 
                         # ---------------------------------
                         # Check today's submission
@@ -1821,9 +2349,11 @@ else:
                             get_ist_date()
                         ))
 
+
                         already_submitted_today = (
                             cursor.fetchone()[0] > 0
                         )
+
 
                         if already_submitted_today:
 
@@ -1833,6 +2363,7 @@ else:
                                 f"ID {clean_id} has already "
                                 f"logged a check-in today."
                             )
+
 
                         else:
 
@@ -1851,27 +2382,32 @@ else:
                                 VALUES (?, ?, ?)
                             """, (
                                 clean_id,
+
                                 get_ist_now().strftime(
                                     "%Y-%m-%d %H:%M:%S"
                                 ),
+
                                 total_score
                             ))
 
-                            # Get exact assessment ID
+
+                            # Exact assessment ID
                             assessment_id = (
                                 cursor.lastrowid
                             )
+
 
                             conn.commit()
 
                             conn.close()
 
+
                             # ---------------------------------
-                            # IMPORTANT:
-                            # Clear cached model results
+                            # Clear cached model
                             # ---------------------------------
 
                             st.cache_data.clear()
+
 
                             # ---------------------------------
                             # Immediately run inference
@@ -1881,14 +2417,16 @@ else:
                                 run_risk_inference
                             )
 
+
                             fresh_df = (
                                 run_risk_inference(
                                     DB_NAME
                                 )
                             )
 
+
                             # ---------------------------------
-                            # Find the exact person
+                            # Find exact personnel
                             # ---------------------------------
 
                             matching = fresh_df[
@@ -1897,29 +2435,35 @@ else:
                                 ] == clean_id
                             ]
 
+
                             notification_created = False
+
 
                             if not matching.empty:
 
                                 person = (
-                                    matching.iloc[0]
+                                    matching.iloc[0].copy()
                                 )
 
-                                # Make sure the notification
-                                # corresponds to THIS submission.
-                                person = person.copy()
+
+                                # Tie this notification
+                                # to THIS exact assessment
 
                                 person[
                                     "assessment_id"
                                 ] = assessment_id
 
+
                                 # ---------------------------------
-                                # THIS IS THE ACTUAL TRIGGER
+                                # ACTUAL NOTIFICATION TRIGGER
                                 # ---------------------------------
 
                                 current_risk = float(
-                                    person["risk_score"]
+                                    person[
+                                        "risk_score"
+                                    ]
                                 )
+
 
                                 if (
                                     current_risk
@@ -1932,16 +2476,18 @@ else:
                                         )
                                     )
 
+
                             # ---------------------------------
-                            # Store success state
+                            # Success state
                             # ---------------------------------
 
                             st.session_state.submitted = True
 
                             st.session_state.biometric_authenticated = False
 
+
                             # ---------------------------------
-                            # Show result
+                            # User message
                             # ---------------------------------
 
                             if notification_created:
@@ -1962,13 +2508,16 @@ else:
                                     "✓ Check-in submitted securely."
                                 )
 
+
                             st.rerun()
+
 
                     except sqlite3.Error as e:
 
                         st.error(
                             f"Database error: {e}"
                         )
+
 
                     except Exception as e:
 
