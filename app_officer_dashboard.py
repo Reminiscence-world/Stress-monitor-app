@@ -168,14 +168,13 @@ ensure_alert_table()
 def get_latest_assessment_id(personnel_id):
 
     try:
-
         conn = get_connection()
 
         row = conn.execute("""
             SELECT assessment_id
             FROM self_assessments
             WHERE personnel_id = ?
-            ORDER BY submission_timestamp DESC, assessment_id DESC
+            ORDER BY assessment_id DESC
             LIMIT 1
         """, (personnel_id,)).fetchone()
 
@@ -184,11 +183,10 @@ def get_latest_assessment_id(personnel_id):
         if row:
             return row["assessment_id"]
 
-    except Exception:
-        pass
+    except Exception as e:
+        print("Assessment lookup error:", e)
 
     return None
-
 
 # ============================================================
 # CONVERT MODEL SIGNAL INTO HUMAN ALERT
@@ -282,8 +280,8 @@ def create_alert_from_case(case):
     except Exception:
         return
 
-    # Only create alerts for risk >= 0.75
-    if risk_score < ALERT_THRESHOLD:
+    # Only high-risk check-ins create alerts
+    if risk_score < 0.75:
         return
 
     personnel_id = str(
@@ -297,6 +295,9 @@ def create_alert_from_case(case):
     assessment_id = get_latest_assessment_id(personnel_id)
 
     if assessment_id is None:
+        print(
+            f"No assessment found for {personnel_id}"
+        )
         return
 
     conn = get_connection()
@@ -304,60 +305,24 @@ def create_alert_from_case(case):
     try:
 
         # ----------------------------------------------------
-        # Prevent duplicate alert for the same check-in
+        # Check whether THIS EXACT CHECK-IN already
+        # generated an alert
         # ----------------------------------------------------
 
-        existing = conn.execute(
-            """
+        existing = conn.execute("""
             SELECT notification_id
             FROM welfare_notifications
             WHERE assessment_id = ?
             LIMIT 1
-            """,
-            (assessment_id,)
-        ).fetchone()
+        """, (assessment_id,)).fetchone()
 
         if existing:
             conn.close()
             return
 
         # ----------------------------------------------------
-        # Get values safely
+        # Get the reason
         # ----------------------------------------------------
-
-        risk_tier = str(
-            case.get("risk_tier", "High")
-        )
-
-        posting = str(
-            case.get(
-                "posting_type",
-                case.get("posting", "Not specified")
-            )
-        )
-
-        continuous_duty = case.get(
-            "continuous_duty_days",
-            None
-        )
-
-        leave_due = case.get(
-            "leave_days_due",
-            None
-        )
-
-        overtime = case.get(
-            "overtime_hours_last_30d",
-            case.get(
-                "overtime_hours_30d",
-                None
-            )
-        )
-
-        self_score = case.get(
-            "self_assessment_score",
-            None
-        )
 
         key_signals = case.get(
             "key_signals",
@@ -369,30 +334,16 @@ def create_alert_from_case(case):
             ""
         )
 
-        suggested_action = case.get(
-            "suggested_actions",
-            talking_point
-        )
-
-        # ----------------------------------------------------
-        # Convert model signal into simple human wording
-        # ----------------------------------------------------
-
         reason = make_alert_reason(
             key_signals,
             talking_point
         )
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # Insert ONLY the core columns.
-        #
-        # This avoids crashing if your older database
-        # does not contain one of the newer optional columns.
+        # Create alert
         # ----------------------------------------------------
 
-        conn.execute(
-            """
+        conn.execute("""
             INSERT INTO welfare_notifications (
                 assessment_id,
                 personnel_id,
@@ -404,36 +355,36 @@ def create_alert_from_case(case):
                 is_read,
                 is_cleared
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                assessment_id,
-                personnel_id,
-                risk_score,
-                risk_tier,
-                reason,
-                suggested_action,
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                0,
-                0
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+        """, (
+            assessment_id,
+            personnel_id,
+            risk_score,
+            str(case.get("risk_tier", "High")),
+            reason,
+            talking_point,
+            datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
             )
-        )
+        ))
 
         conn.commit()
 
+        print(
+            f"ALERT CREATED: {personnel_id} | "
+            f"Risk: {risk_score:.2f} | "
+            f"Assessment: {assessment_id}"
+        )
+
     except sqlite3.Error as e:
 
-        # Don't crash the entire dashboard.
         print(
-            f"Alert database error: {e}"
+            f"Notification database error: {e}"
         )
 
     finally:
 
         conn.close()
-
 # ============================================================
 # GET ACTIVE ALERTS
 # ============================================================
@@ -478,7 +429,7 @@ def get_unread_alert_count():
     conn = get_connection()
 
     row = conn.execute("""
-        SELECT COUNT(*) AS count
+        SELECT COUNT(*)
         FROM welfare_notifications
         WHERE is_read = 0
         AND is_cleared = 0
@@ -486,8 +437,7 @@ def get_unread_alert_count():
 
     conn.close()
 
-    return int(row["count"])
-
+    return int(row[0])
 
 # ============================================================
 # MARK ALERT AS READ
