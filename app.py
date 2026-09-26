@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime
+import pytz
+from datetime import datetime, time
 
 DB_NAME = "personnel_welfare.db"
 
@@ -9,13 +10,24 @@ DB_NAME = "personnel_welfare.db"
 # Page Configuration
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Personnel Welfare Operational System",
+    page_title="Personnel Welfare Operational Monitoring System",
     page_icon="🛡️",
     layout="wide"
 )
 
 # ---------------------------------------------------------
-# Self-healing Schema & Auto-seed for Cloud Deployments
+# Operational Clock & Overdue Check-in Engine (IST)
+# ---------------------------------------------------------
+IST = pytz.timezone("Asia/Kolkata")
+now_ist = datetime.now(IST)
+current_time_str = now_ist.strftime("%d %b %Y | %H:%M hrs IST")
+
+# Configurable daily reporting cutoff time (10:00 AM IST)
+CHECKIN_DEADLINE = time(10, 0)
+is_past_deadline = now_ist.time() >= CHECKIN_DEADLINE
+
+# ---------------------------------------------------------
+# Database Auto-Initialization & Audit Subsystem
 # ---------------------------------------------------------
 def ensure_db_initialized():
     """Ensure database, tables, and baseline records exist."""
@@ -44,7 +56,7 @@ def ensure_db_initialized():
         )
     """)
 
-    # 3. Audit Logs Table
+    # 3. Compliance Audit Trail Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_logs (
             log_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,12 +93,30 @@ def ensure_db_initialized():
 ensure_db_initialized()
 
 def get_valid_personnel_ids():
+    ensure_db_initialized()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT personnel_id FROM personnel_records ORDER BY personnel_id ASC")
     rows = cursor.fetchall()
     conn.close()
     return [r[0] for r in rows]
+
+def get_overdue_personnel():
+    """Identify personnel who have not submitted a check-in for today's IST date."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    today_str = now_ist.strftime("%Y-%m-%d")
+    cursor.execute("""
+        SELECT personnel_id, posting_type FROM personnel_records
+        WHERE personnel_id NOT IN (
+            SELECT DISTINCT personnel_id FROM self_assessments 
+            WHERE date(submission_timestamp) = ?
+        )
+        ORDER BY personnel_id ASC
+    """, (today_str,))
+    overdue_rows = cursor.fetchall()
+    conn.close()
+    return overdue_rows
 
 def log_audit_event(action: str, target_id: str = "ALL"):
     try:
@@ -101,32 +131,32 @@ def log_audit_event(action: str, target_id: str = "ALL"):
     except Exception as e:
         print(f"Audit log failure: {e}")
 
-# Cache expires every 5 seconds to support real-time cross-tab updates
+# Cache expires after 5 seconds to ensure real-time updates when check-ins are logged
 @st.cache_data(ttl=5)
 def fetch_dashboard_data():
     from risk_engine import run_risk_inference
     return run_risk_inference()
 
 # ---------------------------------------------------------
-# Sidebar Navigation & Synchronization Controls
+# Sidebar Portal Navigation
 # ---------------------------------------------------------
 st.sidebar.title("Operational Portals")
 app_mode = st.sidebar.radio(
-    "Select Interface:",
-    ["Command Welfare Dashboard", "Personnel Self-Check-in"]
+    "Select View Mode:",
+    ["Welfare Officer Dashboard", "Personnel Wellness Self-Check-in"]
 )
 
 st.sidebar.markdown("---")
-if st.sidebar.button("🔄 Sync & Refresh Records"):
+if st.sidebar.button("🔄 Sync & Refresh Database"):
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.caption("System Environment: Air-Gapped / Shared SQLite Instance")
+st.sidebar.caption("Security Boundary: Air-Gapped / Unified SQLite Instance")
 
 # =========================================================
-# VIEW 1: COMMAND WELFARE DASHBOARD
+# VIEW 1: WELFARE OFFICER DASHBOARD
 # =========================================================
-if app_mode == "Command Welfare Dashboard":
+if app_mode == "Welfare Officer Dashboard":
     st.title("📋 Personnel Welfare & Operational Strain Monitor")
     st.caption("Decision Support Platform • Administrative & Peer-Care Focus Only")
 
@@ -145,15 +175,58 @@ if app_mode == "Command Welfare Dashboard":
         st.error(f"Error loading model inference engine: {e}")
         st.stop()
 
-    # --- REQUIREMENT 2: AUTOMATIC HIGH STRAIN BANNER (> 0.75) ---
+    # ---------------------------------------------------------
+    # Structured Operational Health & Compliance Triage Tray
+    # ---------------------------------------------------------
     critical_cases = df[df["risk_score"] >= 0.75]
-    if not critical_cases.empty:
-        critical_ids = ", ".join(critical_cases["personnel_id"].tolist())
-        st.error(
-            f"🚨 **URGENT SUPERVISORY ATTENTION REQUIRED:** "
-            f"{len(critical_cases)} personnel exceed critical operational strain threshold ($P \ge 0.75$). "
-            f"Flagged IDs: **{critical_ids}**"
+    overdue_records = get_overdue_personnel() if is_past_deadline else []
+
+    with st.container():
+        st.markdown(
+            f"""
+            <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid #333; 
+                        padding: 10px 16px; border-radius: 6px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; font-size: 0.95rem; color: #e0e0e0;">
+                        Operational Health & Reporting Triage
+                    </span>
+                    <span style="font-size: 0.85rem; color: #888;">
+                        Synced: {current_time_str}
+                    </span>
+                </div>
+            </div>
+            """, 
+            unsafe_allow_html=True
         )
+
+        col_tray1, col_tray2 = st.columns(2)
+
+        # 1. Critical Strain Follow-Up (Clean, calm collapsible list)
+        with col_tray1:
+            if not critical_cases.empty:
+                with st.expander(f"⚠️ Priority Welfare Reviews ({len(critical_cases)})", expanded=False):
+                    st.caption("Personnel exceeding elevated operational strain criteria (P ≥ 0.75):")
+                    for _, row in critical_cases.iterrows():
+                        st.markdown(
+                            f"• **`{row['personnel_id']}`** — Assessed P: `{row['risk_score']}`  \n"
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;<small style='color: #888;'>Signals: {row['key_signals']}</small>", 
+                            unsafe_allow_html=True
+                        )
+            else:
+                st.success("✓ No personnel exceeding critical strain threshold.")
+
+        # 2. Daily Reporting Window / Overdue Alert
+        with col_tray2:
+            if is_past_deadline:
+                if overdue_records:
+                    with st.expander(f"🕒 Check-In Non-Responsive ({len(overdue_records)})", expanded=False):
+                        st.caption(f"Reporting window closed at {CHECKIN_DEADLINE.strftime('%H:%M')} IST.")
+                        for pid, posting in overdue_records:
+                            st.markdown(f"• **`{pid}`** ({posting}) — *Pending check-in*")
+                else:
+                    st.success("✓ All personnel completed check-in for today.")
+            else:
+                st.info(f"⏳ Reporting window open. Daily cutoff: **{CHECKIN_DEADLINE.strftime('%H:%M')} IST**.")
 
     # High-Level Summary Metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -258,11 +331,16 @@ if app_mode == "Command Welfare Dashboard":
             st.info(f"**Key Operational Signals:**\n\n{case['key_signals']}")
             st.success(f"**Suggested Welfare Approach:**\n\n{case['talking_point']}")
 
-
 # =========================================================
-# VIEW 2: PERSONNEL SELF-CHECK-IN
+# VIEW 2: PERSONNEL WELLNESS SELF-CHECK-IN
 # =========================================================
 else:
+    if "submitted" not in st.session_state:
+        st.session_state.submitted = False
+
+    if "biometric_authenticated" not in st.session_state:
+        st.session_state.biometric_authenticated = False
+
     st.markdown(
         """
         <h2 style='margin-bottom: 0px; font-weight: 700;'>
@@ -274,12 +352,6 @@ else:
         """,
         unsafe_allow_html=True
     )
-
-    if "submitted" not in st.session_state:
-        st.session_state.submitted = False
-
-    if "biometric_authenticated" not in st.session_state:
-        st.session_state.biometric_authenticated = False
 
     if st.session_state.submitted:
         st.success("Your check-in has been submitted securely. Thank you for taking a moment for your well-being.")
@@ -349,6 +421,7 @@ else:
                         conn = sqlite3.connect(DB_NAME)
                         cursor = conn.cursor()
 
+                        # Prevent multiple submissions on the same calendar day
                         cursor.execute("""
                             SELECT COUNT(*) FROM self_assessments 
                             WHERE personnel_id = ? AND date(submission_timestamp) = date('now')
@@ -364,7 +437,7 @@ else:
                             """, (clean_id, total_score))
                             conn.commit()
                             
-                            # Invalidate cached inferences so dashboard picks it up immediately
+                            # Invalidate cache so Officer Dashboard reflects update immediately
                             st.cache_data.clear()
                             st.session_state.submitted = True
                             st.rerun()
