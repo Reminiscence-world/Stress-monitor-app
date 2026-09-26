@@ -3,16 +3,25 @@ import pandas as pd
 
 DB_NAME = "personnel_welfare.db"
 
+
 def extract_and_engineer_features(db_path: str = DB_NAME) -> pd.DataFrame:
     """
-    Ticket 4: Merges personnel records with voluntary self-assessments
-    and transforms raw inputs into an ML-ready feature vector.
+    Extracts personnel records + latest voluntary self-assessment
+    and prepares the ML feature matrix.
+
+    Important:
+    - latest_self_score is taken from the most recent assessment
+    - latest_assessment_id is retained for notification tracking
+    - self-assessment score is included in the ML features
     """
+
     conn = sqlite3.connect(db_path)
 
-    # 1. SQL Query: Get personnel records + their most recent self-assessment
+    # ---------------------------------------------------------
+    # Get personnel + MOST RECENT self-assessment
+    # ---------------------------------------------------------
     query = """
-    SELECT 
+    SELECT
         p.personnel_id,
         p.deployment_type,
         p.continuous_duty_days,
@@ -22,36 +31,106 @@ def extract_and_engineer_features(db_path: str = DB_NAME) -> pd.DataFrame:
         p.overtime_hours_last_30d,
         p.sleep_hours_band,
         p.resting_hr_band,
-        s.latest_self_score,
-        p.elevated_welfare_risk
+        p.elevated_welfare_risk,
+
+        s.assessment_id AS latest_assessment_id,
+        s.self_assessment_score AS latest_self_score
+
     FROM personnel_records p
+
     LEFT JOIN (
-        SELECT personnel_id, self_assessment_score AS latest_self_score
+        SELECT
+            assessment_id,
+            personnel_id,
+            self_assessment_score,
+            submission_timestamp
         FROM self_assessments
-        GROUP BY personnel_id
-        HAVING MAX(submission_timestamp)
-    ) s ON p.personnel_id = s.personnel_id;
+        WHERE assessment_id IN (
+            SELECT assessment_id
+            FROM (
+                SELECT
+                    assessment_id,
+                    personnel_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY personnel_id
+                        ORDER BY submission_timestamp DESC, assessment_id DESC
+                    ) AS rn
+                FROM self_assessments
+            )
+            WHERE rn = 1
+        )
+    ) s
+    ON p.personnel_id = s.personnel_id
+
+    ORDER BY p.personnel_id ASC;
     """
-    
+
     df = pd.read_sql_query(query, conn)
+
     conn.close()
 
-    # 2. Handle voluntary self-assessment sparsity
-    # Flag whether assessment exists, impute neutral value (15 out of 25) for non-participants
-    df["has_self_assessment"] = df["latest_self_score"].notnull().astype(int)
-    df["self_assessment_score_imputed"] = df["latest_self_score"].fillna(15.0)
+    if df.empty:
+        return df
 
-    # 3. Categorical encoding for deployment type
-    deployment_dummies = pd.get_dummies(df["deployment_type"], prefix="deploy", dtype=int)
-    
-    # 4. Ordinal/numeric mapping for biometric summary bands
-    sleep_map = {"<5h": 0, "5-7h": 1, ">7h": 2}
-    hr_map = {"normal": 0, "elevated": 1, "high": 2}
-    
-    df["sleep_band_numeric"] = df["sleep_hours_band"].map(sleep_map).fillna(1)
-    df["resting_hr_numeric"] = df["resting_hr_band"].map(hr_map).fillna(0)
+    # ---------------------------------------------------------
+    # Self-assessment handling
+    # ---------------------------------------------------------
 
-    # 5. Assemble final model feature matrix
+    df["has_self_assessment"] = (
+        df["latest_self_score"].notnull().astype(int)
+    )
+
+    # Neutral score = 15/25
+    df["self_assessment_score_imputed"] = (
+        df["latest_self_score"].fillna(15.0)
+    )
+
+    # ---------------------------------------------------------
+    # Deployment encoding
+    # ---------------------------------------------------------
+
+    deployment_dummies = pd.get_dummies(
+        df["deployment_type"],
+        prefix="deploy",
+        dtype=int
+    )
+
+    # ---------------------------------------------------------
+    # Sleep mapping
+    # ---------------------------------------------------------
+
+    sleep_map = {
+        "<5h": 0,
+        "5-7h": 1,
+        ">7h": 2
+    }
+
+    df["sleep_band_numeric"] = (
+        df["sleep_hours_band"]
+        .map(sleep_map)
+        .fillna(1)
+    )
+
+    # ---------------------------------------------------------
+    # Resting heart-rate mapping
+    # ---------------------------------------------------------
+
+    hr_map = {
+        "normal": 0,
+        "elevated": 1,
+        "high": 2
+    }
+
+    df["resting_hr_numeric"] = (
+        df["resting_hr_band"]
+        .map(hr_map)
+        .fillna(0)
+    )
+
+    # ---------------------------------------------------------
+    # Core ML features
+    # ---------------------------------------------------------
+
     feature_columns = [
         "continuous_duty_days",
         "leave_days_taken_last_90d",
@@ -63,12 +142,41 @@ def extract_and_engineer_features(db_path: str = DB_NAME) -> pd.DataFrame:
         "sleep_band_numeric",
         "resting_hr_numeric"
     ]
-    
-    engineered_df = pd.concat([df[["personnel_id"] + feature_columns], deployment_dummies, df["elevated_welfare_risk"]], axis=1)
+
+    # Ensure numeric fields are numeric
+    for col in feature_columns:
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        ).fillna(0)
+
+    # ---------------------------------------------------------
+    # Final engineered dataframe
+    # ---------------------------------------------------------
+
+    engineered_df = pd.concat(
+        [
+            df[
+                [
+                    "personnel_id",
+                    "latest_assessment_id"
+                ] + feature_columns
+            ],
+            deployment_dummies,
+            df[["elevated_welfare_risk"]]
+        ],
+        axis=1
+    )
+
     return engineered_df
 
+
 if __name__ == "__main__":
+
     features_df = extract_and_engineer_features()
+
     print("Feature engineering completed successfully.")
     print(f"Engineered Dataset Shape: {features_df.shape}")
-    print(f"Sample Features:\n{features_df.head(2).T}")
+
+    print("\nSample Features:")
+    print(features_df.head(2).T)
