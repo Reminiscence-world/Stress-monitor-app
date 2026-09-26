@@ -5,17 +5,8 @@ import pytz
 import auth
 import textwrap
 
-st.markdown(
-    textwrap.dedent("""
-        <div style="font-size: 22px; font-weight: 700;">
-            🔔 Welfare Notifications
-        </div>
-        <div style="font-size: 13px; margin-top: 4px; opacity: 0.85;">
-            Personnel requiring welfare attention
-        </div>
-    """),
-    unsafe_allow_html=True
-)
+st.subheader("🔔 Welfare Notifications")
+st.caption("Personnel requiring welfare attention")
 
 from datetime import datetime, time
 
