@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -12,7 +13,6 @@ from risk_engine import run_risk_inference
 
 DB_NAME = "personnel_welfare.db"
 
-# Risk threshold for generating an alert
 ALERT_THRESHOLD = 0.75
 
 
@@ -28,8 +28,10 @@ st.set_page_config(
 # ============================================================
 
 def get_connection():
+
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
@@ -40,6 +42,7 @@ def get_connection():
 def log_audit_event(action: str, target_id: str = "ALL"):
 
     try:
+
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -64,11 +67,12 @@ def log_audit_event(action: str, target_id: str = "ALL"):
         conn.close()
 
     except Exception as e:
+
         print(f"Audit log failure: {e}")
 
 
 # ============================================================
-# CREATE / UPDATE ALERT TABLE
+# ALERT TABLE
 # ============================================================
 
 def ensure_alert_table():
@@ -78,28 +82,37 @@ def ensure_alert_table():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS welfare_notifications (
+
             notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             assessment_id INTEGER,
 
             personnel_id TEXT,
+
             risk_score REAL,
+
             risk_tier TEXT,
 
             posting_type TEXT,
+
             continuous_duty_days INTEGER,
+
             leave_days_due REAL,
+
             overtime_hours_30d REAL,
 
             self_assessment_score REAL,
 
             key_signals TEXT,
+
             suggested_actions TEXT,
+
             talking_point TEXT,
 
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
             is_read INTEGER DEFAULT 0,
+
             is_cleared INTEGER DEFAULT 0
         )
     """)
@@ -107,22 +120,26 @@ def ensure_alert_table():
     conn.commit()
 
     # --------------------------------------------------------
-    # Add missing columns if an older notification table exists
+    # Make old database compatible
     # --------------------------------------------------------
 
-    existing_columns = []
-
     try:
+
         columns = cursor.execute(
             "PRAGMA table_info(welfare_notifications)"
         ).fetchall()
 
-        existing_columns = [row["name"] for row in columns]
+        existing_columns = [
+            row["name"]
+            for row in columns
+        ]
 
     except Exception:
-        pass
+
+        existing_columns = []
 
     required_columns = {
+
         "assessment_id": "INTEGER",
         "personnel_id": "TEXT",
         "risk_score": "REAL",
@@ -145,12 +162,14 @@ def ensure_alert_table():
         if column not in existing_columns:
 
             try:
+
                 cursor.execute(
                     f"""
                     ALTER TABLE welfare_notifications
                     ADD COLUMN {column} {data_type}
                     """
                 )
+
             except Exception:
                 pass
 
@@ -162,16 +181,17 @@ ensure_alert_table()
 
 
 # ============================================================
-# GET LATEST ASSESSMENT FOR A PERSON
+# GET LATEST ASSESSMENT
 # ============================================================
 
-def get_latest_assessment_id(personnel_id):
+def get_latest_assessment(personnel_id):
 
     try:
+
         conn = get_connection()
 
         row = conn.execute("""
-            SELECT assessment_id
+            SELECT *
             FROM self_assessments
             WHERE personnel_id = ?
             ORDER BY assessment_id DESC
@@ -181,123 +201,330 @@ def get_latest_assessment_id(personnel_id):
         conn.close()
 
         if row:
-            return row["assessment_id"]
+
+            return dict(row)
 
     except Exception as e:
-        print("Assessment lookup error:", e)
+
+        print(
+            f"Assessment lookup error: {e}"
+        )
 
     return None
 
+
 # ============================================================
-# CONVERT MODEL SIGNAL INTO HUMAN ALERT
+# FIND THE FIVE CHECK-IN SCORES
 # ============================================================
 
-def make_alert_reason(key_signals, talking_point=None):
+def get_checkin_reason(personnel_id):
+
+    """
+    Looks at the latest personnel check-in and tries to find
+    the five individual 1-5 responses.
+
+    The function supports several possible database column names.
+    """
+
+    assessment = get_latest_assessment(
+        personnel_id
+    )
+
+    if not assessment:
+
+        return (
+            "elevated operational strain indicators",
+            None
+        )
+
+    # --------------------------------------------------------
+    # Possible column names for each question
+    # --------------------------------------------------------
+
+    question_columns = {
+
+        "inadequate rest after sleep": [
+            "sleep_score",
+            "rest_score",
+            "sleep_rest_score",
+            "question_1",
+            "q1",
+            "q1_score"
+        ],
+
+        "a workload that feels difficult to manage": [
+            "workload_score",
+            "daily_workload_score",
+            "question_2",
+            "q2",
+            "q2_score"
+        ],
+
+        "reduced physical or mental energy": [
+            "energy_score",
+            "physical_mental_energy_score",
+            "question_3",
+            "q3",
+            "q3_score"
+        ],
+
+        "limited support from peers or the team": [
+            "support_score",
+            "peer_support_score",
+            "team_support_score",
+            "question_4",
+            "q4",
+            "q4_score"
+        ],
+
+        "reduced morale or motivation": [
+            "morale_score",
+            "motivation_score",
+            "question_5",
+            "q5",
+            "q5_score"
+        ]
+    }
+
+    found_scores = {}
+
+    # --------------------------------------------------------
+    # Search for the actual columns
+    # --------------------------------------------------------
+
+    for reason, possible_columns in question_columns.items():
+
+        for column in possible_columns:
+
+            if column in assessment:
+
+                value = assessment[column]
+
+                try:
+
+                    if value is not None:
+
+                        value = float(value)
+
+                        if 1 <= value <= 5:
+
+                            found_scores[
+                                reason
+                            ] = value
+
+                            break
+
+                except Exception:
+
+                    pass
+
+    # --------------------------------------------------------
+    # If the five individual scores exist
+    # --------------------------------------------------------
+
+    if found_scores:
+
+        lowest_score = min(
+            found_scores.values()
+        )
+
+        lowest_reasons = [
+            reason
+            for reason, score in found_scores.items()
+            if score == lowest_score
+        ]
+
+        # If multiple questions have the same lowest score,
+        # mention them together.
+        if len(lowest_reasons) == 1:
+
+            return (
+                lowest_reasons[0],
+                lowest_score
+            )
+
+        else:
+
+            combined_reason = (
+                " and ".join(lowest_reasons)
+            )
+
+            return (
+                combined_reason,
+                lowest_score
+            )
+
+    # --------------------------------------------------------
+    # Fallback if individual scores aren't stored
+    # --------------------------------------------------------
+
+    return (
+        "elevated operational strain indicators",
+        None
+    )
+
+
+# ============================================================
+# HUMAN-READABLE MODEL FALLBACK
+# ============================================================
+
+def make_alert_reason(
+    key_signals,
+    talking_point=None
+):
 
     if key_signals is None:
-        return "elevated operational strain indicators"
 
-    text = str(key_signals).strip()
+        return (
+            "elevated operational strain indicators"
+        )
+
+    text = str(
+        key_signals
+    ).strip()
 
     if not text:
-        return "elevated operational strain indicators"
 
-    # --------------------------------------------------------
-    # Clean common model-generated formats
-    # --------------------------------------------------------
+        return (
+            "elevated operational strain indicators"
+        )
 
+    # Remove technical formatting
     text = text.replace("[", "")
     text = text.replace("]", "")
     text = text.replace("'", "")
     text = text.replace('"', "")
 
-    # --------------------------------------------------------
-    # Try to identify the actual welfare factor
-    # --------------------------------------------------------
-
     lower = text.lower()
 
     if "sleep" in lower:
-        return "insufficient sleep"
 
-    if "overtime" in lower:
-        return "high overtime workload"
-
-    if "continuous duty" in lower or "duty" in lower:
-        return "extended continuous duty"
-
-    if "leave" in lower:
-        return "accumulated leave backlog"
-
-    if "self assessment" in lower or "self-assessment" in lower:
-        return "elevated self-assessment strain"
+        return "inadequate rest after sleep"
 
     if "rest" in lower:
-        return "insufficient rest"
 
-    if "fatigue" in lower:
-        return "reported fatigue"
+        return "inadequate rest"
 
-    # --------------------------------------------------------
-    # If model returns something like:
-    # "sleep_hours_band, overtime_hours_last_30d"
-    # --------------------------------------------------------
+    if "overtime" in lower:
 
-    if "sleep_hours" in lower:
-        return "insufficient sleep"
+        return "high workload or overtime"
 
-    if "overtime_hours" in lower:
-        return "high overtime workload"
+    if "workload" in lower:
 
-    if "continuous_duty_days" in lower:
+        return "a workload that feels difficult to manage"
+
+    if "continuous duty" in lower:
+
         return "extended continuous duty"
 
-    if "leave_days" in lower:
+    if "duty" in lower:
+
+        return "extended continuous duty"
+
+    if "energy" in lower:
+
+        return "reduced physical or mental energy"
+
+    if "support" in lower:
+
+        return "limited support from peers or the team"
+
+    if "peer" in lower:
+
+        return "limited support from peers or the team"
+
+    if "team" in lower:
+
+        return "limited support from peers or the team"
+
+    if "morale" in lower:
+
+        return "reduced morale or motivation"
+
+    if "motivation" in lower:
+
+        return "reduced morale or motivation"
+
+    if "fatigue" in lower:
+
+        return "reported fatigue"
+
+    if "leave" in lower:
+
         return "accumulated leave backlog"
 
     # --------------------------------------------------------
-    # Final fallback
+    # Final safe fallback
     # --------------------------------------------------------
 
-    # Keep only first meaningful part instead of showing
-    # a huge technical string.
     first_part = text.split(",")[0].strip()
 
     if len(first_part) > 70:
-        first_part = first_part[:67] + "..."
+
+        first_part = (
+            first_part[:67] + "..."
+        )
 
     return first_part
 
 
 # ============================================================
-# CREATE ALERT FOR A NEW HIGH-RISK CHECK-IN
+# CREATE ALERT
 # ============================================================
 
 def create_alert_from_case(case):
 
     try:
-        risk_score = float(case.get("risk_score", 0))
+
+        risk_score = float(
+            case.get("risk_score", 0)
+        )
+
     except Exception:
+
         return
 
-    # Only high-risk check-ins create alerts
-    if risk_score < 0.75:
+    # --------------------------------------------------------
+    # Only create alert if risk >= 0.75
+    # --------------------------------------------------------
+
+    if risk_score < ALERT_THRESHOLD:
+
         return
 
     personnel_id = str(
-        case.get("personnel_id", "")
+        case.get(
+            "personnel_id",
+            ""
+        )
     ).strip()
 
     if not personnel_id:
+
         return
 
-    # Get latest check-in
-    assessment_id = get_latest_assessment_id(personnel_id)
+    # --------------------------------------------------------
+    # Get latest assessment
+    # --------------------------------------------------------
 
-    if assessment_id is None:
+    assessment = get_latest_assessment(
+        personnel_id
+    )
+
+    if not assessment:
+
         print(
             f"No assessment found for {personnel_id}"
         )
+
+        return
+
+    assessment_id = assessment.get(
+        "assessment_id"
+    )
+
+    if assessment_id is None:
+
         return
 
     conn = get_connection()
@@ -305,8 +532,7 @@ def create_alert_from_case(case):
     try:
 
         # ----------------------------------------------------
-        # Check whether THIS EXACT CHECK-IN already
-        # generated an alert
+        # Don't create duplicate alert for same check-in
         # ----------------------------------------------------
 
         existing = conn.execute("""
@@ -314,33 +540,51 @@ def create_alert_from_case(case):
             FROM welfare_notifications
             WHERE assessment_id = ?
             LIMIT 1
-        """, (assessment_id,)).fetchone()
+        """, (
+            assessment_id,
+        )).fetchone()
 
         if existing:
+
             conn.close()
+
             return
 
         # ----------------------------------------------------
-        # Get the reason
+        # FIRST TRY:
+        # Use the five individual check-in scores
         # ----------------------------------------------------
 
-        key_signals = case.get(
-            "key_signals",
-            "elevated operational strain"
-        )
-
-        talking_point = case.get(
-            "talking_point",
-            ""
-        )
-
-        reason = make_alert_reason(
-            key_signals,
-            talking_point
+        reason, checkin_score = (
+            get_checkin_reason(
+                personnel_id
+            )
         )
 
         # ----------------------------------------------------
-        # Create alert
+        # FALLBACK:
+        # Use model signal if individual answers aren't
+        # available in the database.
+        # ----------------------------------------------------
+
+        if (
+            reason ==
+            "elevated operational strain indicators"
+        ):
+
+            reason = make_alert_reason(
+                case.get(
+                    "key_signals",
+                    ""
+                ),
+                case.get(
+                    "talking_point",
+                    ""
+                )
+            )
+
+        # ----------------------------------------------------
+        # Create the alert
         # ----------------------------------------------------
 
         conn.execute("""
@@ -357,12 +601,27 @@ def create_alert_from_case(case):
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
         """, (
+
             assessment_id,
+
             personnel_id,
+
             risk_score,
-            str(case.get("risk_tier", "High")),
+
+            str(
+                case.get(
+                    "risk_tier",
+                    "High"
+                )
+            ),
+
             reason,
-            talking_point,
+
+            case.get(
+                "talking_point",
+                ""
+            ),
+
             datetime.now().strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
@@ -371,8 +630,10 @@ def create_alert_from_case(case):
         conn.commit()
 
         print(
-            f"ALERT CREATED: {personnel_id} | "
+            f"ALERT CREATED: "
+            f"{personnel_id} | "
             f"Risk: {risk_score:.2f} | "
+            f"Reason: {reason} | "
             f"Assessment: {assessment_id}"
         )
 
@@ -385,6 +646,8 @@ def create_alert_from_case(case):
     finally:
 
         conn.close()
+
+
 # ============================================================
 # GET ACTIVE ALERTS
 # ============================================================
@@ -417,7 +680,10 @@ def get_alerts():
 
     conn.close()
 
-    return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+    ]
 
 
 # ============================================================
@@ -439,11 +705,14 @@ def get_unread_alert_count():
 
     return int(row[0])
 
+
 # ============================================================
 # MARK ALERT AS READ
 # ============================================================
 
-def mark_alert_read(notification_id):
+def mark_alert_read(
+    notification_id
+):
 
     conn = get_connection()
 
@@ -451,9 +720,12 @@ def mark_alert_read(notification_id):
         UPDATE welfare_notifications
         SET is_read = 1
         WHERE notification_id = ?
-    """, (notification_id,))
+    """, (
+        notification_id,
+    ))
 
     conn.commit()
+
     conn.close()
 
 
@@ -471,6 +743,7 @@ def clear_all_alerts():
     """)
 
     conn.commit()
+
     conn.close()
 
 
@@ -498,14 +771,16 @@ except Exception as e:
 
 
 # ============================================================
-# CREATE NEW ALERTS BEFORE DISPLAYING THE ICON
+# CREATE NEW ALERTS
 # ============================================================
 
 if df is not None and not df.empty:
 
     for _, case in df.iterrows():
 
-        create_alert_from_case(case)
+        create_alert_from_case(
+            case
+        )
 
 
 # ============================================================
@@ -518,64 +793,13 @@ if "show_alerts" not in st.session_state:
 
 
 # ============================================================
-# CUSTOM ALERT ICON STYLE
+# TOP HEADER
 # ============================================================
 
-st.markdown("""
-<style>
+header_col, bell_col = st.columns(
+    [9, 1]
+)
 
-.alert-button button {
-    border: none !important;
-    background: transparent !important;
-    font-size: 24px !important;
-    padding: 0 !important;
-}
-
-.alert-box {
-    background: #ffffff;
-    border: 1px solid #d9e2ec;
-    border-radius: 14px;
-    padding: 18px;
-    margin-bottom: 20px;
-    box-shadow: 0px 5px 18px rgba(0,0,0,0.08);
-}
-
-.single-alert {
-    background: #fff7f7;
-    border-left: 5px solid #d93025;
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-bottom: 10px;
-    color: #1f2937;
-}
-
-.alert-person {
-    font-size: 16px;
-    font-weight: 700;
-    color: #0B2545;
-}
-
-.alert-message {
-    font-size: 15px;
-    margin-top: 5px;
-    color: #344054;
-}
-
-.alert-time {
-    font-size: 11px;
-    color: #8a94a6;
-    margin-top: 7px;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-
-# ============================================================
-# TOP HEADER + BELL ICON
-# ============================================================
-
-header_col, bell_col = st.columns([9, 1])
 
 with header_col:
 
@@ -584,7 +808,8 @@ with header_col:
     )
 
     st.caption(
-        "Decision Support Platform • Administrative & Peer-Care Focus Only"
+        "Decision Support Platform • "
+        "Administrative & Peer-Care Focus Only"
     )
 
 
@@ -595,11 +820,15 @@ with bell_col:
         unsafe_allow_html=True
     )
 
-    unread_count = get_unread_alert_count()
+    unread_count = (
+        get_unread_alert_count()
+    )
 
     if unread_count > 0:
 
-        bell_text = f"🔔 {unread_count}"
+        bell_text = (
+            f"🔔 {unread_count}"
+        )
 
     else:
 
@@ -624,81 +853,80 @@ if st.session_state.show_alerts:
 
     alerts = get_alerts()
 
-    st.markdown(
-        '<div class="alert-box">',
-        unsafe_allow_html=True
-    )
+    st.markdown("---")
 
     if not alerts:
 
-        st.success("No active welfare alerts.")
+        st.info(
+            "No active welfare alerts."
+        )
 
     else:
 
         for alert in alerts:
 
-            personnel_id = alert["personnel_id"]
-
-            score = float(alert["risk_score"])
-
-            reason = alert.get(
-                "key_signals",
-                "elevated operational strain"
+            personnel_id = str(
+                alert.get(
+                    "personnel_id",
+                    "Unknown"
+                )
             )
 
-            created_at = alert.get(
-                "created_at",
-                ""
+            score = float(
+                alert.get(
+                    "risk_score",
+                    0
+                )
+            )
+
+            reason = str(
+                alert.get(
+                    "key_signals",
+                    "elevated operational strain"
+                )
+            ).strip()
+
+            created_at = str(
+                alert.get(
+                    "created_at",
+                    ""
+                )
             )
 
             # ------------------------------------------------
-            # THIS IS THE ACTUAL MESSAGE SHOWN TO THE OFFICER
+            # CLEAN HUMAN-READABLE ALERT
             # ------------------------------------------------
 
-            message = (
-                f"<b>{personnel_id}</b> has a risk score of "
-                f"<b>{score:.2f}</b> due to "
-                f"<b>{reason}</b>."
+            st.error(
+                f"🔴 **{personnel_id}** has a risk score "
+                f"of **{score:.2f}**. "
+                f"The primary concern reported was "
+                f"**{reason}**."
             )
 
-            st.markdown(
-                f"""
-                <div class="single-alert">
+            if created_at:
 
-                    <div class="alert-person">
-                        🔴 Welfare Alert
-                    </div>
-
-                    <div class="alert-message">
-                        {message}
-                    </div>
-
-                    <div class="alert-time">
-                        {created_at}
-                    </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                st.caption(
+                    f"Alert generated: {created_at}"
+                )
 
             if not alert["is_read"]:
 
                 if st.button(
                     "Mark as read",
-                    key=f"read_{alert['notification_id']}"
+                    key=(
+                        f"read_"
+                        f"{alert['notification_id']}"
+                    )
                 ):
 
                     mark_alert_read(
-                        alert["notification_id"]
+                        alert[
+                            "notification_id"
+                        ]
                     )
 
                     st.rerun()
-
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
 
 
 # ============================================================
@@ -707,13 +935,14 @@ if st.session_state.show_alerts:
 
 st.warning(
     "**ETHICAL COMPLIANCE & USAGE NOTICE:**\n\n"
-    "• **Non-Clinical:** This system is not a diagnostic medical tool "
-    "and does not evaluate psychological disorders.\n"
-    "• **No Disciplinary Use:** Outputs reflect operational stress "
-    "indicators and must not be used for disciplinary actions, "
-    "fitness-for-duty boards, or negative performance appraisals.\n"
-    "• **Confidentiality & Audit:** Voluntary check-in signals are "
-    "isolated and dashboard access is logged."
+    "• **Non-Clinical:** This system is not a diagnostic "
+    "medical tool and does not evaluate psychological disorders.\n"
+    "• **No Disciplinary Use:** Outputs reflect operational "
+    "stress indicators and must not be used for disciplinary "
+    "actions, fitness-for-duty boards, or negative performance "
+    "appraisals.\n"
+    "• **Confidentiality & Audit:** Voluntary check-in signals "
+    "are isolated and dashboard access is logged."
 )
 
 
@@ -726,18 +955,28 @@ st.markdown("---")
 
 col1, col2, col3, col4 = st.columns(4)
 
+
 total_count = len(df)
 
+
 high_count = len(
-    df[df["risk_tier"] == "High"]
+    df[
+        df["risk_tier"] == "High"
+    ]
 )
+
 
 mod_count = len(
-    df[df["risk_tier"] == "Moderate"]
+    df[
+        df["risk_tier"] == "Moderate"
+    ]
 )
 
+
 low_count = len(
-    df[df["risk_tier"] == "Low"]
+    df[
+        df["risk_tier"] == "Low"
+    ]
 )
 
 
@@ -746,10 +985,14 @@ col1.metric(
     total_count
 )
 
+
 if total_count > 0:
 
     high_percentage = round(
-        (high_count / total_count) * 100,
+        (
+            high_count /
+            total_count
+        ) * 100,
         1
     )
 
@@ -765,10 +1008,12 @@ col2.metric(
     delta_color="inverse"
 )
 
+
 col3.metric(
     "Moderate Strain",
     mod_count
 )
+
 
 col4.metric(
     "Baseline / Routine",
@@ -783,7 +1028,9 @@ st.markdown("---")
 # FILTERS
 # ============================================================
 
-filter_col1, filter_col2 = st.columns([1, 2])
+filter_col1, filter_col2 = (
+    st.columns([1, 2])
+)
 
 
 with filter_col1:
@@ -814,14 +1061,17 @@ filtered_df = df.copy()
 if selected_tier != "All":
 
     filtered_df = filtered_df[
-        filtered_df["risk_tier"] == selected_tier
+        filtered_df["risk_tier"]
+        == selected_tier
     ]
 
 
 if search_id:
 
     filtered_df = filtered_df[
-        filtered_df["personnel_id"]
+        filtered_df[
+            "personnel_id"
+        ]
         .astype(str)
         .str.contains(
             search_id,
@@ -832,8 +1082,11 @@ if search_id:
 
 
 log_audit_event(
-    f"VIEW_FILTERED_ROSTER_TIER_{selected_tier}",
-    search_id if search_id else "ROSTER"
+    f"VIEW_FILTERED_ROSTER_TIER_"
+    f"{selected_tier}",
+    search_id
+    if search_id
+    else "ROSTER"
 )
 
 
@@ -842,24 +1095,37 @@ log_audit_event(
 # ============================================================
 
 st.subheader(
-    f"Personnel Roster ({len(filtered_df)} records)"
+    f"Personnel Roster "
+    f"({len(filtered_df)} records)"
 )
 
 
 display_cols = [
+
     "personnel_id",
+
     "risk_tier",
+
     "risk_score",
+
     "continuous_duty_days",
+
     "leave_days_due",
+
     "overtime_hours_last_30d",
+
     "key_signals",
+
     "talking_point"
 ]
 
 
 available_display_cols = [
-    col for col in display_cols
+
+    col
+
+    for col in display_cols
+
     if col in filtered_df.columns
 ]
 
@@ -871,14 +1137,30 @@ export_df = filtered_df[
 
 export_df = export_df.rename(
     columns={
-        "personnel_id": "Service ID",
-        "risk_tier": "Strain Tier",
-        "risk_score": "Risk Probability",
-        "continuous_duty_days": "Continuous Duty (Days)",
-        "leave_days_due": "Leave Due (Days)",
-        "overtime_hours_last_30d": "Overtime 30d (Hrs)",
-        "key_signals": "Primary Contributing Signals",
-        "talking_point": "Recommended Supportive Action"
+
+        "personnel_id":
+            "Service ID",
+
+        "risk_tier":
+            "Strain Tier",
+
+        "risk_score":
+            "Risk Probability",
+
+        "continuous_duty_days":
+            "Continuous Duty (Days)",
+
+        "leave_days_due":
+            "Leave Due (Days)",
+
+        "overtime_hours_last_30d":
+            "Overtime 30d (Hrs)",
+
+        "key_signals":
+            "Primary Contributing Signals",
+
+        "talking_point":
+            "Recommended Supportive Action"
     }
 )
 
@@ -894,23 +1176,31 @@ st.dataframe(
 # CSV EXPORT
 # ============================================================
 
-csv_data = export_df.to_csv(
-    index=False
-).encode("utf-8")
+csv_data = (
+    export_df
+    .to_csv(index=False)
+    .encode("utf-8")
+)
 
 
 st.download_button(
+
     label="📥 Export Welfare Review List",
+
     data=csv_data,
+
     file_name=(
         f"welfare_review_"
         f"{selected_tier.lower()}_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     ),
+
     mime="text/csv",
+
     on_click=lambda:
         log_audit_event(
-            f"EXPORT_CSV_TIER_{selected_tier}"
+            f"EXPORT_CSV_TIER_"
+            f"{selected_tier}"
         )
 )
 
@@ -935,19 +1225,26 @@ available_ids = filtered_df[
 if not available_ids:
 
     st.info(
-        "No personnel match the current filter criteria."
+        "No personnel match the current "
+        "filter criteria."
     )
 
 else:
 
     inspect_id = st.selectbox(
+
         "Select Service ID for Detailed Dossier:",
+
         options=available_ids,
+
         index=0
     )
 
+
     case = filtered_df[
-        filtered_df["personnel_id"] == inspect_id
+        filtered_df[
+            "personnel_id"
+        ] == inspect_id
     ].iloc[0]
 
 
@@ -957,13 +1254,16 @@ else:
     )
 
 
-    dossier_col1, dossier_col2 = st.columns(2)
+    dossier_col1, dossier_col2 = (
+        st.columns(2)
+    )
 
 
     with dossier_col1:
 
         st.write(
-            f"**Service ID:** `{case['personnel_id']}`"
+            f"**Service ID:** "
+            f"`{case['personnel_id']}`"
         )
 
         st.write(
@@ -1008,3 +1308,4 @@ else:
             f"**Suggested Welfare Approach:**\n\n"
             f"{case['talking_point']}"
         )
+```
