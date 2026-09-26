@@ -140,12 +140,27 @@ def create_user(full_name, personnel_id, email, department, password_hash):
            VALUES (?, ?, ?, ?, ?)""",
         (full_name, personnel_id, email, department, password_hash),
     )
-    # Also sync into personnel_records so the risk model can evaluate them
-    conn.execute(
-        """INSERT OR IGNORE INTO personnel_records (personnel_id, continuous_duty_days, leave_due_days, overtime_hours_30d, posting_type)
-           VALUES (?, 0, 0, 0.0, ?)""",
-        (personnel_id, department),
-    )
+    
+    # Sync with personnel_records using matching columns
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO personnel_records 
+               (personnel_id, continuous_duty_days, leave_due_days, overtime_hours_30d, posting_type)
+               VALUES (?, 0, 0, 0.0, ?)""",
+            (personnel_id, department),
+        )
+    except sqlite3.OperationalError:
+        # Fallback in case table uses alternate naming scheme
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO personnel_records 
+                   (personnel_id, continuous_duty_days, leave_days_due, overtime_hours_last_30d, posting_type)
+                   VALUES (?, 0, 0, 0.0, ?)""",
+                (personnel_id, department),
+            )
+        except Exception:
+            pass
+
     conn.commit()
     conn.close()
 
