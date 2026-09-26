@@ -69,14 +69,13 @@ def ensure_auth_db_initialized():
     """)
 
     # Seed a default administrator if none exist
-    cursor.execute("SELECT COUNT(*) FROM administrators")
-    if cursor.fetchone()[0] == 0:
-        # Default Officer: ID = COMMAND-99 | Password = AdminPass@123
-        hashed_admin_pwd = bcrypt.hashpw("AdminPass@123".encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
-        cursor.execute("""
-            INSERT OR IGNORE INTO administrators (officer_id, name, email, password_hash, role)
-            VALUES (?, ?, ?, ?, ?)
-        """, ("COMMAND-99", "HQ Welfare Officer", "welfare.hq@defence.mil", hashed_admin_pwd, "welfare_officer"))
+    # Force reset/guarantee known credentials for COMMAND-99
+    hashed_admin_pwd = bcrypt.hashpw("AdminPass@123".encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    cursor.execute("""
+        INSERT INTO administrators (officer_id, name, email, password_hash, role)
+        VALUES ('COMMAND-99', 'HQ Welfare Officer', 'welfare.hq@defence.mil', ?, 'welfare_officer')
+        ON CONFLICT(officer_id) DO UPDATE SET password_hash = excluded.password_hash
+    """, (hashed_admin_pwd,))
 
     conn.commit()
     conn.close()
