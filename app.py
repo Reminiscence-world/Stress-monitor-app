@@ -1154,32 +1154,30 @@ if app_mode == "Welfare Officer Dashboard":
         with panel_col1:
 
             st.markdown(
-                """
-                <div style="
-                    background:#0B2545;
-                    color:white;
-                    padding:16px 20px;
-                    border-radius:10px;
-                    margin-bottom:10px;
-                ">
-
+                textwrap.dedent("""
                     <div style="
-                        font-size:22px;
-                        font-weight:700;
+                        background:#0B2545;
+                        color:white;
+                        padding:16px 20px;
+                        border-radius:10px;
+                        margin-bottom:10px;
                     ">
-                        🔔 Welfare Notifications
-                    </div>
+                        <div style="
+                            font-size:22px;
+                            font-weight:700;
+                        ">
+                            🔔 Welfare Notifications
+                        </div>
 
-                    <div style="
-                        font-size:13px;
-                        margin-top:4px;
-                        opacity:0.85;
-                    ">
-                        Personnel requiring welfare attention
+                        <div style="
+                            font-size:13px;
+                            margin-top:4px;
+                            opacity:0.85;
+                        ">
+                            Personnel requiring welfare attention
+                        </div>
                     </div>
-
-                </div>
-                """,
+                """),
                 unsafe_allow_html=True
             )
 
@@ -1366,7 +1364,7 @@ if app_mode == "Welfare Officer Dashboard":
                 # -----------------------------------------
 
                 st.markdown(
-                    f"""
+                    textwrap.dedent(f"""
                     <div style="
                         border:1px solid #D9DEE8;
                         border-left:6px solid #C08A3E;
@@ -1671,7 +1669,7 @@ if app_mode == "Welfare Officer Dashboard":
                         </div>
 
                     </div>
-                    """,
+                    """),
                     unsafe_allow_html=True
                 )
 
