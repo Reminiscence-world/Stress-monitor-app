@@ -853,6 +853,7 @@ def get_notifications():
         FROM welfare_notifications
 
         WHERE is_cleared = 0
+            AND is_read = 0
 
         ORDER BY notification_id DESC
     """)
