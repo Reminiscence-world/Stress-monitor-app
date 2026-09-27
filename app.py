@@ -1153,7 +1153,7 @@ if app_mode == "Welfare Officer Dashboard":
 
         with panel_col1:
 
-            st.markdown(
+            st.html(
                 textwrap.dedent("""
                     <div style="
                         background:#0B2545;
@@ -1177,8 +1177,8 @@ if app_mode == "Welfare Officer Dashboard":
                             Personnel requiring welfare attention
                         </div>
                     </div>
-                """),
-                unsafe_allow_html=True
+                """)
+                
             )
 
 
@@ -1363,7 +1363,7 @@ if app_mode == "Welfare Officer Dashboard":
                 # Notification Card
                 # -----------------------------------------
 
-                st.markdown(
+                st.html(
                     textwrap.dedent(f"""
                     <div style="
                         border:1px solid #D9DEE8;
@@ -1669,8 +1669,8 @@ if app_mode == "Welfare Officer Dashboard":
                         </div>
 
                     </div>
-                    """),
-                    unsafe_allow_html=True
+                    """)
+                 
                 )
 
 
