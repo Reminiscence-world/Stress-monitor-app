@@ -5,7 +5,7 @@ import pytz
 import auth
 import textwrap
 
-st.subheader("🔔 Welfare Notifications")
+st.subheader("🔔 Welfare Notification")
 st.caption("Personnel requiring welfare attention")
 
 from datetime import datetime, time
