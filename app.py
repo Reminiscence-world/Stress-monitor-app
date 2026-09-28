@@ -2106,15 +2106,8 @@ if app_mode == "Welfare Officer Dashboard":
 # =========================================================
 
 else:
-
-    st.title(
-        "🛡️ Personnel Wellness Self-Check-in"
-    )
-
-    st.caption(
-        "Voluntary • Confidential • Non-Clinical"
-    )
-
+    st.title("🛡️ Personnel Wellness Self-Check-in")
+    st.caption("Voluntary • Confidential • Non-Clinical")
 
     st.markdown(
         """
@@ -2124,139 +2117,138 @@ else:
             background:#f4f7fb;
             border:1px solid #dce3ec;
         ">
-
         This voluntary check-in helps the welfare team
         identify operational strain indicators that may
         require appropriate welfare support.
 
         The system is not a medical diagnostic tool.
-
         </div>
         """,
         unsafe_allow_html=True
     )
 
-
     st.markdown("---")
 
-    # =========================================================
-    # 1. IDENTITY & VERIFICATION
-    # =========================================================
-    st.subheader("1. Identity & Verification")
-
-    current_auth = st.session_state.get("auth", {})
-    logged_in_id = current_auth.get("identifier")
-    logged_in_name = current_auth.get("full_name") or current_auth.get("name") or "Personnel"
-
-    if logged_in_id:
-        personnel_id = str(logged_in_id).strip()
-        st.success(f"👤 Authenticated Personnel: **{logged_in_name}** (`{personnel_id}`)")
-    else:
-        valid_ids = get_valid_personnel_ids()
-        personnel_id = st.selectbox("Select Your Service ID", options=[""] + valid_ids)
-
-    # Biometric simulation
-    if not st.session_state.get("biometric_authenticated", False):
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.caption(f"Hardware Token / Scanner awaiting input for `{personnel_id}`...")
-        with col2:
-            if st.button("Simulate Biometric Scan 🖲️"):
-                st.session_state.biometric_authenticated = True
-                st.rerun()
-    else:
-        st.success(f"✓ Identity verified for `{personnel_id}`")
-        if st.button("Reset Authentication"):
+    # If already submitted in this session, show confirmation
+    if st.session_state.get("submitted", False):
+        st.success("✓ Your check-in has been submitted securely.")
+        st.info("Only one check-in is permitted per day.")
+        if st.button("Submit Another Check-in", key="btn_submit_another"):
+            st.session_state.submitted = False
             st.session_state.biometric_authenticated = False
             st.rerun()
 
-    st.markdown("---")
-
-    # =========================================================
-    # 2. ASSESSMENT FORM
-    # =========================================================
-    st.subheader("2. Daily Well-Being Assessment")
-
-    if not st.session_state.get("biometric_authenticated", False):
-        st.warning("Please complete the Biometric Scan above to unlock the assessment form.")
     else:
-        with st.form(key="wellness_form"):
-            q1 = st.slider("1. I feel adequately rested after my sleep periods.", 1, 5, 3)
-            q2 = st.slider("2. My current daily workload feels manageable.", 1, 5, 3)
-            q3 = st.slider("3. I have maintained steady physical and mental energy levels today.", 1, 5, 3)
-            q4 = st.slider("4. I feel supported by my peer group and team.", 1, 5, 3)
-            q5 = st.slider("5. My overall morale and motivation remain steady.", 1, 5, 3)
+        # 1. IDENTITY & BIOMETRIC VERIFICATION
+        st.subheader("1. Identity & Verification")
 
-            st.markdown("---")
-            consent_given = st.checkbox("I voluntarily choose to share this wellness self-check-in.")
-            submit_btn = st.form_submit_button("Submit Check-in")
+        current_auth = st.session_state.get("auth", {})
+        logged_in_id = current_auth.get("identifier")
+        logged_in_name = current_auth.get("full_name") or current_auth.get("name") or "Personnel"
 
-        if submit_btn:
-            clean_id = str(personnel_id).strip()
-            if not clean_id:
-                st.error("Invalid Service ID.")
-            elif not consent_given:
-                st.warning("Please check the consent confirmation box before submitting.")
-            else:
-                total_score = q1 + q2 + q3 + q4 + q5
-                try:
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
+        if logged_in_id:
+            personnel_id = str(logged_in_id).strip()
+            st.success(f"👤 Authenticated Personnel: **{logged_in_name}** (`{personnel_id}`)")
+        else:
+            valid_ids = get_valid_personnel_ids()
+            personnel_id = st.selectbox("Select Your Service ID", options=[""] + valid_ids, key="sel_personnel_id")
 
-                    # Guarantee personnel exists in personnel_records (so foreign key passes & officer app sees it)
-                    # Dynamically inspect actual columns present in personnel_records
-                    cursor.execute("PRAGMA table_info(personnel_records)")
-                    columns = [row[1] for row in cursor.fetchall()]
+        if not st.session_state.get("biometric_authenticated", False):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.caption(f"Hardware Token / Scanner awaiting input for `{personnel_id}`...")
+            with col2:
+                if st.button("Simulate Biometric Scan 🖲️", key="btn_bio_scan"):
+                    st.session_state.biometric_authenticated = True
+                    st.rerun()
+        else:
+            st.success(f"✓ Identity verified for `{personnel_id}`")
+            if st.button("Reset Authentication", key="btn_reset_auth"):
+                st.session_state.biometric_authenticated = False
+                st.rerun()
 
-                    # Map schema names dynamically 
-                    leave_col = "leave_days_due" if "leave_days_due" in columns else ("leave_due_days" if "leave_due_days" in columns else None)
-                    ot_col = "overtime_hours_30d" if "overtime_hours_30d" in columns else ("overtime_hours_last_30d" if "overtime_hours_last_30d" in columns else None)
+        st.markdown("---")
 
-                    insert_cols = ["personnel_id"]
-                    insert_vals = [clean_id]
+        # 2. ASSESSMENT FORM
+        st.subheader("2. Daily Well-Being Assessment")
 
-                    if "continuous_duty_days" in columns:
-                        insert_cols.append("continuous_duty_days")
-                        insert_vals.append(14)
-                    if leave_col:
-                        insert_cols.append(leave_col)
-                        insert_vals.append(4)
-                    if ot_col:
-                        insert_cols.append(ot_col)
-                        insert_vals.append(10.0)
-                    if "posting_type" in columns:
-                        insert_cols.append("posting_type")
-                        insert_vals.append("Active Field")
+        if not st.session_state.get("biometric_authenticated", False):
+            st.warning("Please complete the Biometric Scan above to unlock the assessment form.")
+        else:
+            with st.form(key="wellness_form"):
+                q1 = st.slider("1. I feel adequately rested after my sleep periods.", 1, 5, 3)
+                q2 = st.slider("2. My current daily workload feels manageable.", 1, 5, 3)
+                q3 = st.slider("3. I have maintained steady physical and mental energy levels today.", 1, 5, 3)
+                q4 = st.slider("4. I feel supported by my peer group and team.", 1, 5, 3)
+                q5 = st.slider("5. My overall morale and motivation remain steady.", 1, 5, 3)
 
-                    placeholders = ", ".join(["?"] * len(insert_vals))
-                    col_names = ", ".join(insert_cols)
+                st.markdown("---")
+                consent_given = st.checkbox("I voluntarily choose to share this wellness self-check-in.")
+                submit_btn = st.form_submit_button("Submit Check-in")
 
-                    cursor.execute(f"INSERT OR IGNORE INTO personnel_records ({col_names}) VALUES ({placeholders})", tuple(insert_vals))
-                    # Prevent duplicate submissions on the same calendar day
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM self_assessments 
-                        WHERE personnel_id = ? AND date(submission_timestamp) = date('now')
-                    """, (clean_id,))
-                    already_submitted = cursor.fetchone()[0] > 0
+            if submit_btn:
+                clean_id = str(personnel_id).strip()
+                if not clean_id:
+                    st.error("Invalid Service ID.")
+                elif not consent_given:
+                    st.warning("Please check the consent confirmation box before submitting.")
+                else:
+                    total_score = q1 + q2 + q3 + q4 + q5
+                    try:
+                        conn = sqlite3.connect(DB_NAME)
+                        cursor = conn.cursor()
 
-                    if already_submitted:
-                        st.warning(f"ID {clean_id} has already logged a check-in for today.")
-                    else:
+                        # Inspect actual schema dynamically
+                        cursor.execute("PRAGMA table_info(personnel_records)")
+                        columns = [row[1] for row in cursor.fetchall()]
+
+                        leave_col = "leave_days_due" if "leave_days_due" in columns else ("leave_due_days" if "leave_due_days" in columns else None)
+                        ot_col = "overtime_hours_30d" if "overtime_hours_30d" in columns else ("overtime_hours_last_30d" if "overtime_hours_last_30d" in columns else None)
+
+                        insert_cols = ["personnel_id"]
+                        insert_vals = [clean_id]
+
+                        if "continuous_duty_days" in columns:
+                            insert_cols.append("continuous_duty_days")
+                            insert_vals.append(14)
+                        if leave_col:
+                            insert_cols.append(leave_col)
+                            insert_vals.append(4)
+                        if ot_col:
+                            insert_cols.append(ot_col)
+                            insert_vals.append(10.0)
+                        if "posting_type" in columns:
+                            insert_cols.append("posting_type")
+                            insert_vals.append("Active Field")
+
+                        placeholders = ", ".join(["?"] * len(insert_vals))
+                        col_names = ", ".join(insert_cols)
+
+                        cursor.execute(f"INSERT OR IGNORE INTO personnel_records ({col_names}) VALUES ({placeholders})", tuple(insert_vals))
+
+                        # Prevent duplicate submissions on the same calendar day
                         cursor.execute("""
-                            INSERT INTO self_assessments (personnel_id, self_assessment_score)
-                            VALUES (?, ?)
-                        """, (clean_id, total_score))
-                        conn.commit()
+                            SELECT COUNT(*) FROM self_assessments 
+                            WHERE personnel_id = ? AND date(submission_timestamp) = date('now')
+                        """, (clean_id,))
+                        already_submitted = cursor.fetchone()[0] > 0
 
-                        st.session_state.submitted = True
-                        st.session_state.biometric_authenticated = False
-                        st.success("Check-in submitted successfully!")
-                        st.rerun()
+                        if already_submitted:
+                            st.warning(f"ID {clean_id} has already logged a check-in for today.")
+                        else:
+                            cursor.execute("""
+                                INSERT INTO self_assessments (personnel_id, self_assessment_score)
+                                VALUES (?, ?)
+                            """, (clean_id, total_score))
+                            conn.commit()
 
-                    conn.close()
-                except sqlite3.Error as e:
-                    st.error(f"Database error: {e}")
+                            st.session_state.submitted = True
+                            st.session_state.biometric_authenticated = False
+                            st.rerun()
 
+                        conn.close()
+                    except sqlite3.Error as e:
+                        st.error(f"Database error: {e}")
 
     # =====================================================
     # ALREADY SUBMITTED
