@@ -2137,8 +2137,7 @@ else:
             st.session_state.submitted = False
             st.session_state.biometric_authenticated = False
             st.rerun()
-
-    else:
+        st.stop()
         # 1. IDENTITY & BIOMETRIC VERIFICATION
         st.subheader("1. Identity & Verification")
 
