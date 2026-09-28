@@ -2468,11 +2468,24 @@ else:
                             # ---------------------------------
 
                             # 1. Guarantee the user exists in personnel_records (fixes the missing user bug)
-                            cursor.execute("""
-                                INSERT OR IGNORE INTO personnel_records 
-                                (personnel_id, continuous_duty_days, leave_due_days, overtime_hours_30d, posting_type)
-                                VALUES (?, 14, 4, 10.0, 'Active Field')
-                            """, (clean_id,))
+                            try:
+                                cursor.execute("""
+                                    INSERT OR IGNORE INTO personnel_records 
+                                    (personnel_id, continuous_duty_days, leave_days_due, overtime_hours_30d, posting_type)
+                                    VALUES (?, 14, 4, 10.0, 'Active Field')
+                                """, (clean_id,))
+                            except sqlite3.OperationalError:
+                                try:
+                                    cursor.execute("""
+                                        INSERT OR IGNORE INTO personnel_records 
+                                        (personnel_id, continuous_duty_days, leave_days_due, overtime_hours_last_30d, posting_type)
+                                        VALUES (?, 14, 4, 10.0, 'Active Field')
+                                    """, (clean_id,))
+                                except sqlite3.OperationalError:
+                                    cursor.execute("""
+                                        INSERT OR IGNORE INTO personnel_records (personnel_id)
+                                        VALUES (?)
+                                    """, (clean_id,))
 
                             # 2. Insert the assessment record
                             cursor.execute("""
