@@ -2204,12 +2204,34 @@ else:
                     cursor = conn.cursor()
 
                     # Guarantee personnel exists in personnel_records (so foreign key passes & officer app sees it)
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO personnel_records 
-                        (personnel_id, continuous_duty_days, leave_days_due, overtime_hours_30d, posting_type)
-                        VALUES (?, 14, 4, 10.0, 'Active Field')
-                    """, (clean_id,))
+                    # Dynamically inspect actual columns present in personnel_records
+                    cursor.execute("PRAGMA table_info(personnel_records)")
+                    columns = [row[1] for row in cursor.fetchall()]
 
+                    # Map schema names dynamically 
+                    leave_col = "leave_days_due" if "leave_days_due" in columns else ("leave_due_days" if "leave_due_days" in columns else None)
+                    ot_col = "overtime_hours_30d" if "overtime_hours_30d" in columns else ("overtime_hours_last_30d" if "overtime_hours_last_30d" in columns else None)
+
+                    insert_cols = ["personnel_id"]
+                    insert_vals = [clean_id]
+
+                    if "continuous_duty_days" in columns:
+                        insert_cols.append("continuous_duty_days")
+                        insert_vals.append(14)
+                    if leave_col:
+                        insert_cols.append(leave_col)
+                        insert_vals.append(4)
+                    if ot_col:
+                        insert_cols.append(ot_col)
+                        insert_vals.append(10.0)
+                    if "posting_type" in columns:
+                        insert_cols.append("posting_type")
+                        insert_vals.append("Active Field")
+
+                    placeholders = ", ".join(["?"] * len(insert_vals))
+                    col_names = ", ".join(insert_cols)
+
+                    cursor.execute(f"INSERT OR IGNORE INTO personnel_records ({col_names}) VALUES ({placeholders})", tuple(insert_vals))
                     # Prevent duplicate submissions on the same calendar day
                     cursor.execute("""
                         SELECT COUNT(*) FROM self_assessments 
