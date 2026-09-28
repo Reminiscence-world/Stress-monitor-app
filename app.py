@@ -2166,75 +2166,52 @@ else:
             st.rerun()
 
 
-    else:
-
-        # =================================================
+    # =================================================
         # IDENTITY
         # =================================================
 
-        st.subheader(
-            "1. Identity & Verification"
-        )
+        st.subheader("1. Identity & Verification")
 
+        # Check if user is logged in via authentication session
+        current_auth = st.session_state.get("auth", {})
+        logged_in_id = current_auth.get("identifier")
+        logged_in_name = current_auth.get("full_name") or current_auth.get("name") or "Personnel"
 
-        valid_ids = get_valid_personnel_ids()
-
-
-        personnel_id = st.selectbox(
-            "Select Your Service ID",
-            options=[""] + valid_ids
-        )
-
+        if logged_in_id:
+            personnel_id = logged_in_id
+            st.success(f"👤 Authenticated Personnel: **{logged_in_name}** (`{personnel_id}`)")
+        else:
+            valid_ids = get_valid_personnel_ids()
+            personnel_id = st.selectbox(
+                "Select Your Service ID",
+                options=[""] + valid_ids
+            )
 
         if personnel_id:
 
             if not st.session_state.biometric_authenticated:
 
-                col1, col2 = st.columns(
-                    [2, 1]
-                )
-
+                col1, col2 = st.columns([2, 1])
 
                 with col1:
-
                     st.caption(
-                        f"Hardware Token / Scanner "
-                        f"awaiting input for "
-                        f"`{personnel_id}`..."
+                        f"Hardware Token / Scanner awaiting input for `{personnel_id}`..."
                     )
 
-
                 with col2:
-
-                    if st.button(
-                        "Simulate Biometric Scan 🖲️"
-                    ):
-
+                    if st.button("Simulate Biometric Scan 🖲️"):
                         st.session_state.biometric_authenticated = True
-
                         st.rerun()
-
 
             else:
 
-                st.success(
-                    f"✓ Identity verified for "
-                    f"`{personnel_id}`"
-                )
+                st.success(f"✓ Identity verified for `{personnel_id}`")
 
-
-                if st.button(
-                    "Reset Authentication"
-                ):
-
+                if st.button("Reset Authentication"):
                     st.session_state.biometric_authenticated = False
-
                     st.rerun()
 
-
         st.markdown("---")
-
-
         # =================================================
         # ASSESSMENT
         # =================================================
@@ -2394,22 +2371,25 @@ else:
                             # Insert assessment
                             # ---------------------------------
 
+                            # 1. Guarantee the user exists in personnel_records (fixes the missing user bug)
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO personnel_records 
+                                (personnel_id, continuous_duty_days, leave_due_days, overtime_hours_30d, posting_type)
+                                VALUES (?, 14, 4, 10.0, 'Active Field')
+                            """, (clean_id,))
+
+                            # 2. Insert the assessment record
                             cursor.execute("""
                                 INSERT INTO self_assessments
                                 (
-                                    personnel_id,
-                                    submission_timestamp,
-                                    self_assessment_score
+                                personnel_id,
+                                submission_timestamp,
+                                self_assessment_score
                                 )
-
                                 VALUES (?, ?, ?)
                             """, (
                                 clean_id,
-
-                                get_ist_now().strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                ),
-
+                                get_ist_now().strftime("%Y-%m-%d %H:%M:%S"),
                                 total_score
                             ))
 
