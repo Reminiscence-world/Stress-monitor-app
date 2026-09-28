@@ -120,15 +120,32 @@ def _is_strong_password(password: str):
 # --- CRUD: users ---------------------------------------------------------------
 def get_user_by_personnel_id(personnel_id: str):
     conn = get_connection()
-    row = conn.execute("SELECT * FROM users WHERE personnel_id = ?", (personnel_id,)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE personnel_id = ?", (personnel_id,)).fetchone()
+    except sqlite3.OperationalError:
+        # If table doesn't exist or schema isn't ready, initialize it immediately
+        ensure_auth_db_initialized()
+        try:
+            row = conn.execute("SELECT * FROM users WHERE personnel_id = ?", (personnel_id,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+    finally:
+        conn.close()
     return dict(row) if row else None
 
 
 def get_user_by_email(email: str):
     conn = get_connection()
-    row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    except sqlite3.OperationalError:
+        ensure_auth_db_initialized()
+        try:
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+    finally:
+        conn.close()
     return dict(row) if row else None
 
 
