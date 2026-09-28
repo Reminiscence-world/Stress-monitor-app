@@ -2206,7 +2206,7 @@ else:
                     # Guarantee personnel exists in personnel_records (so foreign key passes & officer app sees it)
                     cursor.execute("""
                         INSERT OR IGNORE INTO personnel_records 
-                        (personnel_id, continuous_duty_days, leave_due_days, overtime_hours_30d, posting_type)
+                        (personnel_id, continuous_duty_days, leave_days_due, overtime_hours_30d, posting_type)
                         VALUES (?, 14, 4, 10.0, 'Active Field')
                     """, (clean_id,))
 
