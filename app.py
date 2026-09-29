@@ -2109,24 +2109,12 @@ else:
     st.title("🛡️ Personnel Wellness Self-Check-in")
     st.caption("Voluntary • Confidential • Non-Clinical")
 
-    st.markdown(
-        """
-        <div style="
-            padding:18px;
-            border-radius:12px;
-            background:#f4f7fb;
-            border:1px solid #dce3ec;
-        ">
-        This voluntary check-in helps the welfare team
-        identify operational strain indicators that may
-        require appropriate welfare support.
-
-        The system is not a medical diagnostic tool.
-        </div>
-        """,
-        unsafe_allow_html=True
+    st.info(
+        "ℹ️ **Voluntary Check-in Notice:**\n\n"
+        "This voluntary check-in helps the welfare team identify operational strain "
+        "indicators that may require appropriate welfare support. "
+        "The system is not a medical diagnostic tool."
     )
-
     st.markdown("---")
 
     # If already submitted in this session, show confirmation
